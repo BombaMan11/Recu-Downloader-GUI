@@ -14,14 +14,13 @@ three download modes, and settings that are remembered.
    (**Replace cookie**) at the top right of the main window, next to the clipboard button. It
    asks you to confirm, then saves what you copied as the cookie, nothing else is changed.
    Downloads that are running or waiting are never left on the old cookie: they are paused
-   first, as if you pressed **Pause all**, and the cookie is replaced. A message says
-   "Downloads Paused to Replace Cookies". Press **Start** (or **Start all**) when you want
-   them to carry on with the new cookie. If you answer No to the question, nothing changes.
+   first then the cookie is replaced.
+   
    Saving a different cookie in Settings asks the same question and does the same.
    The **Replace cookie** button in Settings (next to the box) does the same with what you
    copied. The program reads the clipboard itself, so the browser never asks for permission.
    If there is no text on the clipboard, nothing is replaced.
-3. Paste links in the box at the top, one per line, and press **Add to list**:
+4. Paste links in the box at the top, one per line, and press **Add to list**:
 
    ```
    https://Recu.me/video/1234567/play
@@ -94,7 +93,7 @@ replaces, shortens or deletes what is in it.
   again and the write retried. Recurbate also takes a `<file>.lock` file while it writes, and
   waits for it if another program that uses the same lock file is writing.
 - Once a day, before the first change, the file is copied to `<file>.backups\` (for example
-  `All-Stored-links.txt.backups\All-Stored-links.txt.2026-10-18.bak`). A backup is never
+  `Archive.txt.backups\Archive.txt.2026-10-18.bak`). A backup is never
   overwritten and Recurbate never deletes one. `added.log` there lists every line added
   with the time, so the file can be rebuilt from the newest `.bak` plus `added.log`.
 - A file that is **missing** but has backups is not created again (that would start a new
@@ -140,8 +139,7 @@ box   ["https://Recu.me/video/xxxxxxx/play","55:00","1:10:00","1:30:00"]
 ```
 
 If what you copied is a whole entry such as
-`["https://Recu.me/video/xxxxxxx/play","0:00:00","1:30:00","1:30:00"],` (as the browser script's
-*Next* and *Full Link* buttons copy), the box gets that **whole entry**, with its start and end
+`["https://Recu.me/video/xxxxxxx/play","0:00:00","1:30:00","1:30:00"],`, the box gets that **whole entry**, with its start and end
 times (without the trailing comma), while the text file gets only the plain link. A plain link
 copied on its own goes into both as it is. Another clip of the same video (different times) is a new
 entry in the box; the file keeps the link once. A line that is already in the box is not put
@@ -303,7 +301,7 @@ Edge is already part of Windows.
    `build.bat` contains:
 
    ```
-   go build -trimpath -ldflags="-s -w -X main.tag=vX.X.X" -buildvcs=false -o Recu.exe
+   go build -trimpath -ldflags="-s -w -H=windowsgui -X main.tag=vX.X.X" -buildvcs=false -o Recu.exe
    ```
 
    `-trimpath` leaves your folder names out of the file, `-buildvcs=false` leaves out Git
