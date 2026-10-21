@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recurbate</title>
+<script>try{var t=localStorage.getItem('rp-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
+<link rel="icon" type="image/png" href="icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l12-7.5z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-play-all" viewBox="0 0 24 24"><path d="M3 5v14l9-7zM12 5v14l9-7z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M6.5 4.5h4v15h-4zM13.5 4.5h4v15h-4z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13.5 2 5 13.5h6L10 22l9-12h-6.5z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-top" viewBox="0 0 24 24"><path d="M5 4h14M12 20V9M7 13.5 12 8.5l5 5"/></symbol>
+    <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V6M6 12l6-6 6 6"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v13M6 12l6 6 6-6"/></symbol>
+    <symbol id="i-bottom" viewBox="0 0 24 24"><path d="M5 20h14M12 4v11M7 10.5l5 5 5-5"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9.5 7V4h5v3M6 7l1 13h10l1-13M10 11v5M14 11v5"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v4h4M9 12h6M9 16h6"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 6.5h6l2 2.5h10V19H3z"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><circle cx="12" cy="12" r="7.6" stroke-dasharray="3.6 2.4"/></symbol>
+    <symbol id="i-clip" viewBox="0 0 24 24"><path d="M9 4h6v3H9zM15 5.5h2.5V20h-11V5.5H9M9.5 11h5M9.5 14.5h5M9.5 17.5h3"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15.5" r="3.5"/><path d="m10.5 13 8.5-8.5M16 7.5l2.5 2.5M13.5 10l2 2"/></symbol>
+    <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3v8M6.6 6.8a8 8 0 1 0 10.8 0"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m16 16 5 5"/></symbol>
+    <symbol id="i-broom" viewBox="0 0 24 24"><path d="M4 6h10M4 12h10M4 18h6M15.5 16l2.5 2.5 4-5"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6"/></symbol>
+  </defs>
+</svg>
+
+<div id="app">
+  <header class="top">
+    <div class="brand">Recurbate</div>
+    <textarea id="urlInput" spellcheck="false" aria-label="Links to add"
+      placeholder='One link per line, then press Add to list. To download only part of a video, give its start, end and total length:&#10;https://…/video/1234567/play&#10;["https://…/video/1234567/play","55:00","1:10:00","1:30:00"]'></textarea>
+    <div class="addActions">
+      <div class="addRow">
+        <select class="sel" id="addCategory" aria-label="Category for the links in the box" title="Category for the links in the box"></select>
+        <button class="btn primary" id="addBtn" type="button">Add to list</button>
+      </div>
+      <button class="btn" id="scanBtn" type="button"><svg class="ic"><use href="#i-search"/></svg>Find links on a page…</button>
+    </div>
+    <div class="topBtns">
+      <button class="icon-btn" id="listenBtn" type="button" aria-pressed="false" title="Link listener is off" aria-label="Link listener"><svg class="ic"><use href="#i-clip"/></svg></button>
+      <button class="icon-btn" id="cookieBtn" type="button" title="Replace cookie: use the text you last copied" aria-label="Replace cookie"><svg class="ic"><use href="#i-key"/></svg></button>
+      <button class="icon-btn" id="settingsBtn" type="button" title="Settings" aria-label="Settings"><svg class="ic"><use href="#i-gear"/></svg></button>
+      <button class="icon-btn" id="quitBtn" type="button" title="Shut down Recurbate" aria-label="Shut down Recurbate"><svg class="ic"><use href="#i-power"/></svg></button>
+    </div>
+  </header>
+
+  <div class="banner" id="credsBanner" hidden>
+    <span>Downloads can’t start yet. Add your User-Agent and Cookie in Settings.</span>
+    <button class="btn" id="credsBtn" type="button">Open settings</button>
+  </div>
+
+  <nav class="toolbar" aria-label="Downloads">
+    <button class="tb" data-action="start" data-needs="sel" title="Start the selected rows (they follow the mode)"><svg class="ic c-ok"><use href="#i-play"/></svg>Start</button>
+    <button class="tb" data-action="pause" data-needs="sel" title="Pause the selected rows"><svg class="ic c-warn"><use href="#i-pause"/></svg>Pause</button>
+    <button class="tb" data-action="forcestart" data-needs="sel" title="Start the selected rows now, whatever the mode"><svg class="ic c-warn"><use href="#i-bolt"/></svg>Force start</button>
+    <span class="sep"></span>
+    <button class="tb" data-action="startall" title="Start all rows"><svg class="ic c-ok"><use href="#i-play-all"/></svg>Start all</button>
+    <button class="tb" data-action="pauseall" title="Pause all rows"><svg class="ic c-warn"><use href="#i-pause"/></svg>Pause all</button>
+    <button class="tb" data-action="forcestartall" title="Start every active row now, whatever the mode"><svg class="ic c-warn"><use href="#i-bolt"/></svg>Force start all</button>
+    <span class="sep"></span>
+    <button class="tb only-icon" data-action="top" data-needs="sel" title="Move to top" aria-label="Move to top"><svg class="ic"><use href="#i-top"/></svg></button>
+    <button class="tb only-icon" data-action="up" data-needs="sel" title="Move up" aria-label="Move up"><svg class="ic"><use href="#i-up"/></svg></button>
+    <button class="tb only-icon" data-action="down" data-needs="sel" title="Move down" aria-label="Move down"><svg class="ic"><use href="#i-down"/></svg></button>
+    <button class="tb only-icon" data-action="bottom" data-needs="sel" title="Move to bottom" aria-label="Move to bottom"><svg class="ic"><use href="#i-bottom"/></svg></button>
+    <span class="sep"></span>
+    <button class="tb" data-action="m3u8" data-needs="sel" title="Get playlist: save only the .m3u8 playlist of the selected rows"><svg class="ic"><use href="#i-list"/></svg>Playlist</button>
+    <button class="tb" data-action="remove" data-needs="sel" title="Remove the selected rows from the list (asks first)"><svg class="ic c-err"><use href="#i-trash"/></svg>Remove</button>
+    <button class="tb only-icon" data-action="clearcompleted" title="Clear finished: remove finished rows from the list (videos stay in the Done folder)" aria-label="Clear finished rows"><svg class="ic"><use href="#i-broom"/></svg></button>
+    <button class="tb only-icon" id="openDone" title="Open the Done folder" aria-label="Open the Done folder"><svg class="ic"><use href="#i-folder"/></svg></button>
+    <span class="mode-label" style="margin-left:auto">Mode</span>
+    <div class="seg" id="modeSeg" role="radiogroup" aria-label="Download mode">
+      <button type="button" role="radio" data-mode="normal" aria-checked="false" title="Every active row downloads at the same time">Normal</button>
+      <button type="button" role="radio" data-mode="hybrid" aria-checked="false" title="One download per server, different servers at the same time">Hybrid</button>
+      <button type="button" role="radio" data-mode="series" aria-checked="false" title="One download at a time, top to bottom">Series</button>
+    </div>
+  </nav>
+
+  <main class="table-wrap" id="tableWrap" tabindex="0" aria-label="Download list">
+    <table id="grid">
+      <colgroup id="cols"><col><col><col><col><col><col><col><col><col><col><col><col><col><col></colgroup>
+      <thead>
+        <tr>
+          <th data-col="act" style="text-align:center;padding:0"><input type="checkbox" id="allActive" title="Active rows can start. Inactive rows are never started." aria-label="Active"></th>
+          <th data-col="num" class="num">#</th><th data-col="name">Name</th><th data-col="status">Status</th><th data-col="progress">Progress</th>
+          <th data-col="speed" class="num">Speed</th><th data-col="eta" class="num">Time left</th><th data-col="size" class="num" title="Downloaded so far">Size</th><th data-col="full" class="num" title="Size of the finished file. Worked out from what has been downloaded so far, so it is an estimate (with ~) until the download is finished.">Full size</th><th data-col="server">Server</th><th data-col="category">Category</th><th data-col="start" class="num" title="Where in the video the download starts">Start</th><th data-col="end" class="num" title="Where in the video the download ends. For a whole video this is its length, found when its playlist is read.">End</th><th data-col="duration" class="num" title="How much of the video is downloaded (End minus Start)">Duration</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty">
+      <strong>Nothing in the list yet</strong>
+      <span>Paste links in the box above and press Add to list.</span>
+    </div>
+  </main>
+
+  <footer class="status" id="statusBar">
+    <span class="stat"><i class="dot dl"></i><span id="stDl">0 downloading</span></span>
+    <span class="stat"><i class="dot wait"></i><span id="stWait">0 waiting</span></span>
+    <span class="stat"><i class="dot"></i><span id="stPaused">0 paused</span></span>
+    <span class="stat"><i class="dot ok"></i><span id="stDone">0 finished</span></span>
+    <span class="stat" id="stErrBox" hidden><i class="dot err"></i><span id="stErr">0 failed</span></span>
+    <span class="grow"></span>
+    <span class="warn" id="stConn" hidden>Connection lost. Close this window and start Recurbate again.</span>
+    <span id="stSpeed">0 B/s</span>
+    <span id="stVersion"></span>
+  </footer>
+</div>
+
+<!-- settings -->
+<section class="page" id="settingsPage" hidden aria-label="Settings">
+  <div class="page-head">
+    <button class="icon-btn" id="settingsBack" type="button" title="Back to the list" aria-label="Back to the list"><svg class="ic"><use href="#i-back"/></svg></button>
+    <h1>Settings</h1>
+  </div>
+  <div class="page-body">
+    <div class="page-inner">
+      <div class="group">
+        <h2>Connection</h2>
+        <div class="field">
+          <label for="setUA">User-Agent</label>
+          <input type="text" id="setUA" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="setCookie">Cookie</label>
+          <textarea id="setCookie" rows="4" class="masked" autocomplete="off" spellcheck="false"></textarea>
+          <div class="row"><button class="btn" id="revealCookie" type="button">Show cookie</button> <button class="btn" id="replaceCookie" type="button" title="Empties the box and pastes whatever you last copied">Replace cookie</button></div>
+          <div class="help">Copy both values from your browser: open the site while signed in, press F12, choose Network, select a request to the site and look under Request headers. They are saved on this computer and kept after you close the program.</div>
+        </div>
+      </div>
+
+      <div class="group">
+        <h2>Normal folders</h2>
+        <div class="field">
+          <label for="setDone">Finished videos</label>
+          <div class="row"><input type="text" id="setDone" spellcheck="false" autocomplete="off" placeholder="Default: next to Recu.exe"><button class="btn" type="button" data-browse="setDone">Browse…</button><button class="btn" type="button" data-open="done">Open</button></div>
+        </div>
+        <div class="field">
+          <label for="setIncomplete">Unfinished videos</label>
+          <div class="row"><input type="text" id="setIncomplete" spellcheck="false" autocomplete="off" placeholder="Default: next to Recu.exe"><button class="btn" type="button" data-browse="setIncomplete">Browse…</button><button class="btn" type="button" data-open="incomplete">Open</button></div>
+        </div>
+        <div class="field">
+          <label for="setM3U8">Playlists (.m3u8)</label>
+          <div class="row"><input type="text" id="setM3U8" spellcheck="false" autocomplete="off" placeholder="Default: next to Recu.exe"><button class="btn" type="button" data-browse="setM3U8">Browse…</button><button class="btn" type="button" data-open="m3u8">Open</button></div>
+        </div>
+        <div class="help">Used by downloads without a category, and by categories that leave a folder blank. Leave a box blank to use the folder Recu.exe is in (no subfolders). To use another place, type a full path such as D:\Videos or press Browse. A video moves from the unfinished to the finished folder when it completes.</div>
+      </div>
+
+      <div class="group" id="listenGroup">
+        <h2>Link listener</h2>
+        <div class="help">While enabled, the program will listen for URLs copied to the clipboard from Recu.me or other Sites added to the "What Counts as a Link" box. The URLs are added into the URL box and Archived if the option is enabled.</div>
+        <label class="check"><input type="checkbox" id="setListenOn"><span>Listen to Clipboard and Add to URL Box</span></label>
+        <label class="check"><input type="checkbox" id="setListenArchive"><span>Archive: save the links to a text file</span></label>
+        <div class="field" id="listenArchiveField">
+          <label for="setListenFile">Text file</label>
+          <input type="text" id="setListenFile" spellcheck="false" autocomplete="off" placeholder="Full path, e.g. D:\Links\links.txt">
+          <div class="help">A .txt file (also .text, .list, .lst, .md or .csv). It is created if it is not there yet, but its folder must exist. New links go above the old ones, each on a new line; the file’s other lines stay as they are. The file always gets just the plain link, even when you copy a whole entry with its times.</div>
+        </div>
+        <label class="check" id="listenBackupsRow"><input type="checkbox" id="setListenBackups"><span>Backups: keep a copy of the archive for each day (made the first time that day a link is added) and a log of every link added, in a folder next to the file called <code>&lt;file name&gt;.backups</code>. Old copies are never deleted. While backups are on, an archive that goes missing is not created again, so you notice. There are no backups without the archive.</span></label>
+        <div class="field">
+          <label for="setListenPatterns">What counts as a link (one regular expression per line)</label>
+          <textarea id="setListenPatterns" rows="5" spellcheck="false" autocomplete="off"></textarea>
+          <div class="help">Every match is added. If a pattern has a group in brackets, only what the first group matches is added, otherwise the whole match. A pattern can only match within one line. Blank lines and lines starting with # are ignored; with nothing here the default is used. The default finds video links such as <code>https://Recu.me/video/1234567/play</code> even inside <code>["https://Recu.me/video/1234567/play","55:00","1:10:00"],</code>. To add more, add a line, for example <code>https://other\.me/v/\d+</code>.</div>
+        </div>
+        <label class="check"><input type="checkbox" id="setListenSkip"><span>Skip links that are already in the file</span></label>
+        <label class="check"><input type="checkbox" id="setListenPrivate"><span>Also read copies from private windows. Browsers mark everything copied in a private or incognito window as private, and password managers do the same for passwords; these are skipped unless you tick this. Only links the patterns find are ever used, whatever else was copied.</span></label>
+        <div class="field">
+          <label for="setListenTest">Try the patterns</label>
+          <textarea id="setListenTest" rows="3" spellcheck="false" autocomplete="off" placeholder="Paste some text here to see which links the patterns above would pick out"></textarea>
+          <div class="row"><button class="btn" type="button" id="listenTestBtn">Test patterns</button></div>
+          <pre class="testout" id="listenTestOut" hidden></pre>
+        </div>
+        <div class="help">Only text is looked at, nothing else you copy is kept or shown, and copies marked private (private browser windows, password managers) are skipped unless you allow them above. Patterns are checked as they are saved and can’t slow the program down. The listener only ever writes to the file above.</div>
+      </div>
+
+      <div class="group">
+        <h2>Table</h2>
+        <div class="field">
+          <div class="row"><button class="btn" type="button" id="resetColumns">Reset column widths</button></div>
+          <div class="help">Drag the border on the right of a column heading to resize it. The widths are remembered. This puts every column back to its default width.</div>
+        </div>
+      </div>
+
+      <div class="group" id="categoriesGroup">
+        <h2>Categories</h2>
+        <div class="help">Each category has its own folders for unfinished videos, finished videos and playlists. A folder left blank uses the normal folder from above. Pick a category in the box next to Add to list, or change it later by right-clicking a row.</div>
+        <div class="help">Changing the category of a row that is already in the list deletes its files from the old folders and starts it again in the new ones. Removing a category here only takes it off its rows; their files stay where they are.</div>
+        <div id="catList" class="cats"></div>
+        <div class="row"><button class="btn" id="catAdd" type="button">Add category</button></div>
+      </div>
+
+      <div class="group">
+        <h2>Program data folder</h2>
+        <div class="field">
+          <label for="setDataDir">Folder</label>
+          <div class="row"><input type="text" id="setDataDir" spellcheck="false" autocomplete="off" placeholder="Blank = next to Recu.exe"><button class="btn" type="button" data-browse="setDataDir">Browse…</button><button class="btn" type="button" data-open="data">Open</button></div>
+          <div class="help">One folder for everything the program keeps for itself: settings.json (it holds your cookie), queue.json, Recurbate.log and the data of the program’s window (browser-data). When you save a new folder, settings, queue and log move there at once and the window’s data follows the next time Recurbate starts. A folder that already holds a settings.json or queue.json is refused so nothing gets overwritten. The choice is remembered in Recurbate.paths.json next to Recu.exe; delete that file to go back to the default, a folder called Recu-Settings next to Recu.exe.</div>
+        </div>
+      </div>
+
+      <div class="group">
+        <h2>Downloads</h2>
+        <div class="field">
+          <span class="lbl">Modes</span>
+          <ul class="modes">
+            <li><b>Normal</b> downloads every active row at the same time.</li>
+            <li><b>Hybrid</b> downloads one row per server, and different servers at the same time.</li>
+            <li><b>Series</b> downloads one row at a time, top to bottom.</li>
+          </ul>
+          <div class="help">Switch modes with the buttons above the list. Downloads already running keep going when you switch.</div>
+        </div>
+        <div class="field">
+          <label for="setParallel">Most downloads at once in Normal mode</label>
+          <input type="number" id="setParallel" min="0" step="1">
+          <div class="help">0 means no limit.</div>
+        </div>
+        <div class="field">
+          <label for="setRes">Highest video quality (height in pixels)</label>
+          <input type="number" id="setRes" min="0" step="1" placeholder="e.g. 720">
+          <div class="help">0 means the best quality available.</div>
+        </div>
+        <label class="check"><input type="checkbox" id="setAutoStart"><span>Start new rows as soon as they are added</span></label>
+        <label class="check"><input type="checkbox" id="setAutoResume"><span>Continue unfinished downloads when Recurbate starts</span></label>
+      </div>
+
+
+      <div class="group">
+        <h2>Appearance</h2>
+        <div class="field">
+          <span class="lbl">Theme</span>
+          <div class="radios" role="radiogroup" aria-label="Theme">
+            <label><input type="radio" name="theme" value="system"> Match Windows</label>
+            <label><input type="radio" name="theme" value="light"> Light</label>
+            <label><input type="radio" name="theme" value="dark"> Dark</label>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="page-foot">
+    <span class="saved" id="savedNote" role="status"></span>
+    <button class="btn" id="settingsClose" type="button">Back to the list</button>
+    <button class="btn primary" id="settingsSave" type="button">Save settings</button>
+  </div>
+</section>
+
+<ul class="menu" id="ctxMenu" hidden role="menu"></ul>
+<div id="toasts" aria-live="polite"></div>
+
+<dialog id="confirmDlg">
+  <form method="dialog">
+    <h2 id="confirmTitle"></h2>
+    <p id="confirmText"></p>
+    <label class="check" id="confirmCheckRow" hidden><input type="checkbox" id="confirmCheck"><span id="confirmCheckText"></span></label>
+    <div class="dialog-actions">
+      <button class="btn" value="cancel">Cancel</button>
+      <button class="btn danger" value="ok" id="confirmOk">Delete</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="scanDlg">
+  <form method="dialog" id="scanForm">
+    <h2>Find links on a page</h2>
+    <p>Enter the address of a page that lists videos. The links found are put in the box at the top so you can check them before adding.</p>
+    <input type="url" id="scanUrl" placeholder="https://…" spellcheck="false" class="text">
+    <div class="dialog-actions">
+      <button class="btn" value="cancel" type="button" id="scanCancel">Cancel</button>
+      <button class="btn primary" id="scanGo" type="submit">Find links</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="app.js"></script>
+<div class="stopping" id="stopping" hidden role="alert"><div><strong id="stoppingTitle">Stopping downloads…</strong><span id="stoppingText">Saving your list. This window closes by itself.</span></div></div>
+</body>
+</html>
