@@ -59,6 +59,7 @@ type Item struct {
 	DonePath   string
 	TempPath   string // the unfinished .ts file, wherever it was started
 	Category   string // category id, "" = none
+	Prime      bool   // still to download its first pieces (see primeSegments)
 
 	// runtime only
 	res          *engine.Resolved
@@ -75,6 +76,10 @@ type Item struct {
 	etaMin       float32
 	stage        string
 	note         string
+	priming      bool    // running to download its first pieces only
+	fresh        bool    // its server was learned in this session (not just remembered from an earlier one)
+	settled      bool    // this run is past the Unique Server Find check
+	primeWant    bool    // after the first pieces: queue it (it was asked to start) instead of pausing
 	recat        *string // category to move to once the running work has stopped
 }
 

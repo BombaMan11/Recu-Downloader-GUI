@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,6 +43,7 @@ type Manager struct {
 	listenEvery time.Duration
 	listenAdded int    // links the listener added since the program started
 	listenErr   string // the listener's last problem, "" = none
+	recovery    string // what was repaired when the files were read at start, "" = nothing (shown until dismissed)
 	listened    []ListenedLink
 	listenSeq   int64
 }
@@ -137,6 +139,27 @@ func (m *Manager) notifyLocked(level, text string) {
 		m.notices = m.notices[len(m.notices)-30:]
 	}
 	m.changedLocked(false)
+}
+
+// recoveryLocked records that a file was empty or damaged at start. The
+// window shows it as a banner until it is dismissed, and it is logged.
+func (m *Manager) recoveryLocked(text string) {
+	log.Printf("recovery: %s", text)
+	if m.recovery != "" {
+		m.recovery += "\n"
+	}
+	m.recovery += text
+	m.changedLocked(false)
+}
+
+// DismissRecovery hides the banner about files repaired at start.
+func (m *Manager) DismissRecovery() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.recovery != "" {
+		m.recovery = ""
+		m.changedLocked(false)
+	}
 }
 
 func (m *Manager) notify(level, text string) {
@@ -309,6 +332,9 @@ func (m *Manager) setSettings(s Settings) (int, error) {
 	s = m.withLocations(s) // what is really in effect (and in the pointer file)
 	m.settings = s
 	for _, it := range m.items {
+		if !s.FirstPieces {
+			it.Prime = false
+		}
 		if s.category(it.Category) == nil {
 			it.Category = "" // its category was removed; its files stay where they are
 		}
@@ -506,12 +532,17 @@ func (m *Manager) AddTo(text, category string) (added int, problems []string) {
 	if m.settings.category(category) == nil {
 		category = ""
 	}
+	if m.settings.BottomFirst { // the bottom line of what was added becomes its first row
+		for i, j := 0, len(entries)-1; i < j; i, j = i+1, j-1 {
+			entries[i], entries[j] = entries[j], entries[i]
+		}
+	}
 	for _, e := range entries {
 		if m.hasLocked(e) {
 			problems = append(problems, "already in the list: "+tools.ShortenString(e.URL, 70))
 			continue
 		}
-		it := &Item{ID: m.nextID, URL: e.URL, SectionRef: e.Section, Section: [2]float32{0, 100}, Active: true, Category: category}
+		it := &Item{ID: m.nextID, URL: e.URL, SectionRef: e.Section, Section: [2]float32{0, 100}, Active: true, Category: category, Prime: m.settings.FirstPieces}
 		m.nextID++
 		if len(e.Section) == 3 {
 			it.Section, _ = tools.PercentParse(e.Section)
@@ -581,6 +612,9 @@ func (m *Manager) Start(ids []int64) {
 			it.Status = StatusQueued
 			it.Error = ""
 		}
+		if m.settings.FirstPieces && it.Active && it.Status == StatusQueued && it.Offset == 0 && it.FileSize == 0 {
+			it.Prime = true // no progress yet: first pieces first, then it goes back in line
+		}
 	}
 	m.changedLocked(true)
 	m.kick()
@@ -600,6 +634,7 @@ func (m *Manager) pauseLocked(it *Item) {
 		return
 	}
 	it.Forced = false
+	it.Prime = false // the person took over: no first pieces for this row
 	if it.cancel != nil {
 		it.cancel()
 	}
@@ -665,9 +700,10 @@ func (m *Manager) StartAll() {
 }
 
 // forgetServerLocked drops what is known about a row's server so the next
-// start looks it up again. Rows that are running keep their server.
+// start looks it up again. Rows that are running keep their server. A row that
+// is only still winding down from a pause (busy, but no longer running) forgets it.
 func (m *Manager) forgetServerLocked(it *Item) {
-	if it.busy || it.Status == StatusResolving || it.Status == StatusDownloading || it.Status == StatusComplete {
+	if it.Status == StatusResolving || it.Status == StatusDownloading || it.Status == StatusComplete {
 		return
 	}
 	it.res = nil
@@ -891,7 +927,7 @@ func (m *Manager) saveM3U8(it *Item) {
 	m.mu.Lock()
 	res := it.res
 	m.mu.Unlock()
-	if res == nil || res.Stale(30*time.Second) {
+	if m.stale(res) {
 		env := m.envFor(ctx, it, false)
 		if !m.acquireResolve(ctx) {
 			return

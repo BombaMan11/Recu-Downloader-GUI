@@ -31,6 +31,10 @@ type ItemView struct {
 	StartSec float64 `json:"startSec"`
 	EndSec   float64 `json:"endSec"`
 	DurSec   float64 `json:"durSec"`
+	VideoSec float64 `json:"videoSec"` // length of the whole video, 0 = not known yet
+	// LengthComing: the length is not known yet but is being looked up or will be
+	// (false for a lookup that failed, which is not tried again).
+	LengthComing bool `json:"lengthComing,omitempty"`
 	// Category is the category id ("" = none), CategoryName what the table shows.
 	Category     string `json:"category"`
 	CategoryName string `json:"categoryName"`
@@ -60,6 +64,7 @@ type Snapshot struct {
 	Mode        string         `json:"mode"`
 	MaxParallel int            `json:"maxParallel"`
 	NeedCreds   bool           `json:"needCreds"`
+	Recovery    string         `json:"recovery,omitempty"` // files that were repaired at start (see loadJSONFile)
 	Theme       string         `json:"theme"`
 	Items       []ItemView     `json:"items"`
 	Categories  []CategoryView `json:"categories"`
@@ -85,6 +90,7 @@ func (m *Manager) Snapshot() Snapshot {
 		Mode:        m.settings.Mode,
 		MaxParallel: m.settings.MaxParallel,
 		NeedCreds:   !m.settings.credsOK(),
+		Recovery:    m.recovery,
 		Theme:       m.settings.Theme,
 		Items:       make([]ItemView, 0, len(m.items)),
 		Categories:  make([]CategoryView, 0, len(m.settings.Categories)),
@@ -112,6 +118,8 @@ func (m *Manager) Snapshot() Snapshot {
 			v.Category, v.CategoryName = c.ID, c.Name
 		}
 		v.StartSec, v.EndSec, v.DurSec = sectionSeconds(it)
+		v.VideoSec = it.VideoSecs
+		v.LengthComing = it.SectionRef == nil && it.VideoSecs <= 0 && (it.busy || it.needsLength() || it.Prime)
 		switch it.Status {
 		case StatusResolving:
 			v.Detail = it.stage

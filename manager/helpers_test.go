@@ -35,6 +35,8 @@ func newTestEnv(t *testing.T, mode string, tweak func(*mocksite.Site)) *testEnv 
 		s.UserAgent = site.UA
 		s.Cookie = site.Cookie
 		s.AutoStart, s.AutoResume = true, true // off in a new install; most tests want rows to run
+		s.FirstPieces = false                  // on in a new install; the tests that want it turn it on
+		s.LongLasting = false                  // on in a new install; the tests that want it turn it on
 	})
 	if err := e.m.SetMode(mode); err != nil {
 		t.Fatal(err)

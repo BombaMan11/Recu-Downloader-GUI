@@ -38,17 +38,25 @@ const (
 // itself; it lives in the pointer file described in package appdata and is
 // only carried here so the settings page can edit it.
 type Settings struct {
-	UserAgent     string `json:"userAgent"`
-	Cookie        string `json:"cookie"`
-	Theme         string `json:"theme"` // system | light | dark
-	Mode          string `json:"mode"`
-	DoneDir       string `json:"doneDir"`
-	IncompleteDir string `json:"incompleteDir"`
-	M3U8Dir       string `json:"m3u8Dir"`
-	MaxResolution int    `json:"maxResolution"` // video height, 0 = no limit
-	MaxParallel   int    `json:"maxParallel"`   // Normal mode, 0 = unlimited
-	AutoStart     bool   `json:"autoStart"`     // start new rows as soon as they are added
-	AutoResume    bool   `json:"autoResume"`    // resume unfinished rows on launch
+	UserAgent     string  `json:"userAgent"`
+	Cookie        string  `json:"cookie"`
+	Theme         string  `json:"theme"` // system | light | dark
+	Mode          string  `json:"mode"`
+	DoneDir       string  `json:"doneDir"`
+	IncompleteDir string  `json:"incompleteDir"`
+	M3U8Dir       string  `json:"m3u8Dir"`
+	MaxResolution int     `json:"maxResolution"`  // video height, 0 = no limit
+	MaxParallel   int     `json:"maxParallel"`    // Normal mode, 0 = unlimited
+	AutoStart     bool    `json:"autoStart"`      // start new rows as soon as they are added
+	AutoResume    bool    `json:"autoResume"`     // resume unfinished rows on launch
+	FirstPieces   bool    `json:"firstPieces"`    // a new row first downloads its first pieces, then pauses or starts as usual
+	UniqueServer  bool    `json:"uniqueServer"`   // experimental: a row may not use the server of the row above it
+	ServerRetries int     `json:"serverRetries"`  // Unique Server Find: how often a row asks for another server
+	ServerWait    float64 `json:"serverWait"`     // seconds between those tries
+	DeepSearch    bool    `json:"deepSearch"`     // also avoid the servers of the rows further up (needs UniqueServer)
+	DeepPositions int     `json:"deepPositions"`  // how many rows above Deep Search compares
+	LongLasting   bool    `json:"longLasting"`    // rows are read when started, not when their turn comes; no tick box, only the settings file changes it
+	BottomFirst   bool    `json:"addBottomFirst"` // links added together go in bottom to top: the bottom link becomes the first row of the batch
 
 	DataDir string `json:"dataDir,omitempty"`
 
@@ -75,8 +83,11 @@ func orDefault(v, def string) string {
 
 func DefaultSettings() Settings {
 	return Settings{
-		Theme: "system",
-		Mode:  string(ModeHybrid),
+		Theme:         "system",
+		FirstPieces:   true,
+		LongLasting:   true,
+		ServerRetries: 10, ServerWait: 1, DeepPositions: 2,
+		Mode: string(ModeHybrid),
 		// AutoStart and AutoResume are off: nothing starts until the person says so.
 		Listen: ListenSettings{
 			Enabled:        true,
@@ -154,6 +165,24 @@ func (s *Settings) normalize() {
 	if s.MaxParallel < 0 {
 		s.MaxParallel = 0
 	}
+	s.ServerRetries = clampInt(s.ServerRetries, 1, 100)
+	if s.ServerWait < 0.1 || s.ServerWait != s.ServerWait {
+		s.ServerWait = 0.1
+	}
+	if s.ServerWait > 60 {
+		s.ServerWait = 60
+	}
+	s.DeepPositions = clampInt(s.DeepPositions, 2, 20)
+}
+
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 // credsOK: the original refused to run without a cookie and a user agent.

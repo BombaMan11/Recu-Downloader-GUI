@@ -2,6 +2,8 @@ package manager
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"Recurbate/engine"
 	"Recurbate/internal/mocksite"
 )
 
@@ -547,9 +550,9 @@ func TestSameVideoTwiceGetsDistinctFileNames(t *testing.T) {
 	ids := e.add(`["`+u+`","0:00","0:20","2:00"]`, `["`+u+`","1:00","1:20","2:00"]`)
 	e.waitComplete(ids...)
 	a, err1 := os.ReadFile(e.path("", e.site.Filename(2)+".ts"))
-	b, err2 := os.ReadFile(e.path("", e.site.Filename(2)+"(1).ts"))
+	b, err2 := os.ReadFile(e.path("", e.site.Filename(2)+"_01.ts"))
 	if err1 != nil || err2 != nil {
-		t.Fatalf("expected %s.ts and %s(1).ts in Done: %v %v", e.site.Filename(2), e.site.Filename(2), err1, err2)
+		t.Fatalf("expected %s.ts and %s_01.ts in Done: %v %v", e.site.Filename(2), e.site.Filename(2), err1, err2)
 	}
 	if bytes.Equal(a, b) {
 		t.Fatal("both sections have identical content")
@@ -830,5 +833,613 @@ func TestArrangeKeepsTheGivenOrder(t *testing.T) {
 	e.m.Arrange([]int64{ids[0], ids[1], ids[2], ids[3], ids[4]}, false) // the whole queue
 	if got, want := order(), ids; !reflect.DeepEqual(got, want) {
 		t.Fatalf("all: %v want %v", got, want)
+	}
+}
+
+// With "add the bottom link first" the bottom line of what is added becomes
+// the first row of that batch; off (the default) keeps the order as typed.
+func TestBottomFirstReversesTheBatchOnly(t *testing.T) {
+	e := newTestEnv(t, "series", nil)
+	e.setSettings(func(s *Settings) { s.AutoStart = false })
+	if e.m.Settings().BottomFirst {
+		t.Fatal("must be off by default")
+	}
+	urls := func() []string {
+		var out []string
+		for _, it := range e.m.Snapshot().Items {
+			out = append(out, it.URL)
+		}
+		return out
+	}
+	a, b, c, d, f := e.site.VideoURL(2), e.site.VideoURL(3), e.site.VideoURL(4), e.site.VideoURL(5), e.site.VideoURL(6)
+	e.add(a, b, c)
+	if got := urls(); !reflect.DeepEqual(got, []string{a, b, c}) {
+		t.Fatalf("off: %v", got)
+	}
+	e.setSettings(func(s *Settings) { s.BottomFirst = true })
+	e.add(d, f)
+	// the first batch is where it was; the new batch is flipped and goes after it
+	if got := urls(); !reflect.DeepEqual(got, []string{a, b, c, f, d}) {
+		t.Fatalf("on: %v", got)
+	}
+}
+
+// Rows of one video are numbered in list order whichever starts first, also in
+// Normal mode where they all start at once.
+func TestSameVideoNamesFollowTheListOrderInEveryMode(t *testing.T) {
+	for _, mode := range []string{"normal", "hybrid", "series"} {
+		for round := 0; round < 4; round++ {
+			e := newTestEnv(t, mode, func(s *mocksite.Site) { s.Delay = 3 * time.Millisecond })
+			e.setSettings(func(s *Settings) { s.AutoStart = false })
+			starts := []string{"0:00:00", "0:00:40", "0:01:20", "0:02:00", "0:02:40", "0:03:20"}
+			var lines []string
+			for i, st := range starts {
+				end := "0:04:00"
+				if i+1 < len(starts) {
+					end = starts[i+1]
+				}
+				lines = append(lines, fmt.Sprintf(`["%s","%s","%s","0:04:00"]`, e.site.VideoURL(2), st, end))
+			}
+			ids := e.add(lines...)
+			e.m.StartAll()
+			for _, id := range ids {
+				e.waitComplete(id)
+			}
+			for i, id := range ids {
+				want := "user2_24-01-02_10-30"
+				if i > 0 {
+					want += fmt.Sprintf("_%02d", i)
+				}
+				if got := strings.TrimSuffix(filepath.Base(e.item(id).Done), ".ts"); got != want {
+					t.Fatalf("%s mode, round %d: row %d (%s) is %q, want %q", mode, round, i+1, starts[i], got, want)
+				}
+			}
+		}
+	}
+}
+
+// The number comes from the row's place in the list, not from the order the
+// rows start in. In Hybrid mode rows of one new link can start together when
+// the site hands them different servers, so the last row may ask for its name
+// first.
+func TestFileNumberDoesNotDependOnWhichRowAsksFirst(t *testing.T) {
+	m, err := New(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Shutdown()
+	const link = "https://Recu.me/video/1/play"
+	var rows []*Item
+	m.mu.Lock()
+	for i := 0; i < 4; i++ {
+		it := &Item{ID: int64(i + 1), URL: link}
+		rows = append(rows, it)
+		m.items = append(m.items, it)
+	}
+	other := &Item{ID: 9, URL: "https://Recu.me/video/2/play"}
+	m.items = append(m.items, other)
+	// they ask in the worst order: last row first, then the first, then the middle ones
+	got := map[int]string{}
+	for _, i := range []int{3, 0, 2, 1} {
+		rows[i].FileBase = m.uniqueBaseLocked("clip", rows[i])
+		got[i] = rows[i].FileBase
+	}
+	otherName := m.uniqueBaseLocked("clip", other) // another link with the same file name keeps the old rule
+	m.mu.Unlock()
+	want := map[int]string{0: "clip", 1: "clip_01", 2: "clip_02", 3: "clip_03"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("names %v, want %v", got, want)
+	}
+	if otherName != "clip_04" {
+		t.Errorf("a different link with the same name got %q, want the next free number clip_04", otherName)
+	}
+}
+
+func TestNumberedNamesHaveTwoDigits(t *testing.T) {
+	for i, want := range map[int]string{0: "clip", 1: "clip_01", 9: "clip_09", 10: "clip_10", 92: "clip_92", 99: "clip_99", 100: "clip_100"} {
+		if got := numberedName("clip", i); got != want {
+			t.Errorf("%d: %q, want %q", i, got, want)
+		}
+	}
+	// two files that ended up with the same name in the Done folder are numbered the same way
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "clip.ts"), nil, 0600)
+	if got := filepath.Base(uniquePath(dir, "clip", ".ts")); got != "clip_01.ts" {
+		t.Errorf("uniquePath gave %q", got)
+	}
+	os.WriteFile(filepath.Join(dir, "clip_01.ts"), nil, 0600)
+	if got := filepath.Base(uniquePath(dir, "clip", ".ts")); got != "clip_02.ts" {
+		t.Errorf("uniquePath gave %q", got)
+	}
+}
+
+// A row's length is "coming" while it is being looked up (the window waits for
+// it when copying an extended link), and not once the lookup has failed.
+func TestLengthComingUntilTheLookupEnds(t *testing.T) {
+	for _, good := range []bool{true, false} {
+		e := newTestEnv(t, "series", nil)
+		e.setSettings(func(s *Settings) {
+			s.AutoStart = false
+			if !good {
+				s.Cookie = "wrong=1" // the site refuses it, so the lookup fails
+			}
+		})
+		id := e.addVideos(2)[0]
+		if !e.item(id).LengthComing {
+			t.Errorf("good=%v: not coming right after adding", good)
+		}
+		e.waitFor("lookup ends", func() bool { return !e.item(id).LengthComing })
+		it := e.item(id)
+		if good != (it.VideoSec > 0) {
+			t.Errorf("good=%v: video length %v", good, it.VideoSec)
+		}
+		time.Sleep(100 * time.Millisecond)
+		if it = e.item(id); it.LengthComing {
+			t.Errorf("good=%v: a finished lookup is coming again", good)
+		}
+	}
+}
+
+// A new row first downloads its first pieces (so its start, end and length are
+// fixed and its file is in the folder), then pauses; it only goes on when asked.
+func TestNewRowGetsItsFirstPiecesThenPauses(t *testing.T) {
+	e := newTestEnv(t, "series", func(s *mocksite.Site) { s.Delay = 5 * time.Millisecond })
+	e.setSettings(func(s *Settings) { s.AutoStart, s.FirstPieces = false, true })
+	id := e.addVideos(2)[0]
+	e.waitFor("the first pieces", func() bool { it := e.item(id); return it.Status == "paused" && it.Bytes > 0 })
+	it := e.item(id)
+	if it.VideoSec <= 0 || it.EndSec <= 0 || it.DurSec <= 0 {
+		t.Errorf("start/end/length not fixed: %+v", it)
+	}
+	if it.Percent <= 0 || it.Percent > 10 {
+		t.Errorf("%.1f%% done, want just the first pieces", it.Percent)
+	}
+	if st, err := os.Stat(e.path("", e.site.Filename(2)+".ts")); err != nil || st.Size() != it.Bytes {
+		t.Errorf("the unfinished file is not in the folder with the bytes shown: %v", err)
+	}
+	bytesThen := it.Bytes
+	time.Sleep(300 * time.Millisecond)
+	if it = e.item(id); it.Status != "paused" || it.Bytes != bytesThen {
+		t.Errorf("it went on by itself: %q, %d bytes", it.Status, it.Bytes)
+	}
+	// started by the person: it carries on from there and the file is whole
+	e.m.Start([]int64{id})
+	e.waitComplete(id)
+	if want := e.site.Expected(2, "720p", 0, 20); !bytes.Equal(e.readDone(2), want) {
+		t.Fatal("the file differs after the first pieces and the rest")
+	}
+}
+
+// With "Start new rows" on, the row goes back in line and finishes by itself.
+func TestNewRowGoesBackInLineAfterItsFirstPieces(t *testing.T) {
+	e := newTestEnv(t, "hybrid", func(s *mocksite.Site) { s.Delay = 3 * time.Millisecond })
+	e.setSettings(func(s *Settings) { s.AutoStart, s.FirstPieces = true, true })
+	ids := e.addVideos(2, 3)
+	e.waitComplete(ids...)
+	for i, vid := range []int{2, 3} {
+		if want := e.site.Expected(vid, "720p", 0, 20); !bytes.Equal(e.readDone(vid), want) {
+			t.Errorf("video %d differs", vid)
+		}
+		_ = i
+	}
+}
+
+// New rows get their first pieces one at a time, in list order.
+func TestFirstPiecesGoOneRowAtATime(t *testing.T) {
+	e := newTestEnv(t, "normal", func(s *mocksite.Site) { s.Delay = 20 * time.Millisecond })
+	e.setSettings(func(s *Settings) { s.AutoStart, s.FirstPieces = false, true })
+	ids := e.addVideos(2, 3, 4)
+	most, order := 0, []int64{}
+	seen := map[int64]bool{}
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		running := 0
+		done := 0
+		for _, id := range ids {
+			it := e.item(id)
+			if it.Status == "resolving" || it.Status == "downloading" {
+				running++
+				if !seen[id] {
+					seen[id] = true
+					order = append(order, id)
+				}
+			}
+			if it.Status == "paused" && it.Bytes > 0 {
+				done++
+			}
+		}
+		if running > most {
+			most = running
+		}
+		if done == len(ids) {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if most != 1 {
+		t.Errorf("%d rows were running at once, want 1", most)
+	}
+	if !reflect.DeepEqual(order, ids) {
+		t.Errorf("order %v, want the list order %v", order, ids)
+	}
+	for _, id := range ids {
+		if it := e.item(id); it.Status != "paused" || it.Bytes == 0 {
+			t.Errorf("row %d: %q, %d bytes", id, it.Status, it.Bytes)
+		}
+	}
+}
+
+// Switched off, a new row just sits there as before.
+func TestNoFirstPiecesWhenSwitchedOff(t *testing.T) {
+	e := newTestEnv(t, "series", nil)
+	e.setSettings(func(s *Settings) { s.AutoStart, s.FirstPieces = false, false })
+	id := e.addVideos(2)[0]
+	time.Sleep(400 * time.Millisecond)
+	if it := e.item(id); it.Status != "paused" || it.Bytes != 0 {
+		t.Errorf("%q, %d bytes", it.Status, it.Bytes)
+	}
+	if !DefaultSettings().FirstPieces {
+		t.Error("must be on by default")
+	}
+}
+
+// Start on a row with no progress, which was in the list before, downloads its
+// first pieces first even though it was not added with Preload Files on.
+func TestStartPreloadsRowsWithNoProgress(t *testing.T) {
+	e := newTestEnv(t, "series", func(s *mocksite.Site) { s.Delay = 150 * time.Millisecond })
+	e.setSettings(func(s *Settings) { s.AutoStart, s.FirstPieces = false, false })
+	ids := e.addVideos(2, 3)
+	e.setSettings(func(s *Settings) { s.FirstPieces = true })
+	e.m.Start(ids)
+	e.waitFor("the second row's first pieces while the first still downloads", func() bool {
+		return e.item(ids[1]).Bytes > 0 && e.item(ids[0]).Status != "complete"
+	})
+}
+
+// Unique Server Find: a row is not allowed the server of the row above it.
+func TestUniqueServerFindRulesBasic(t *testing.T) {
+	m := &Manager{settings: Settings{UniqueServer: true, ServerRetries: 10, DeepPositions: 2}}
+	r10, r11, me := &Item{Server: "s23", fresh: true}, &Item{Server: "s26", fresh: true}, &Item{}
+	m.items = []*Item{r10, r11, me}
+	if !m.serverBusy(me, "s26", 0, map[string]bool{}) {
+		t.Error("the server of the row directly above must be refused")
+	}
+	if m.serverBusy(me, "s23", 0, map[string]bool{}) {
+		t.Error("without Deep Search only the row directly above counts")
+	}
+	m.settings.UniqueServer = false
+	if m.serverBusy(me, "s26", 0, map[string]bool{}) {
+		t.Error("switched off, nothing is refused")
+	}
+}
+
+func TestUniqueServerFindDeepSearch(t *testing.T) {
+	m := &Manager{settings: Settings{UniqueServer: true, DeepSearch: true, ServerRetries: 3, DeepPositions: 2}}
+	r10, r11, me := &Item{Server: "s23", fresh: true}, &Item{Server: "s26", fresh: true}, &Item{}
+	m.items = []*Item{r10, r11, me}
+	for _, s := range []string{"s23", "s26"} {
+		if !m.serverBusy(me, s, 0, map[string]bool{}) {
+			t.Errorf("%s is within the 2 rows above and must be refused", s)
+		}
+	}
+	if m.serverBusy(me, "s30", 0, map[string]bool{}) {
+		t.Error("a server none of the rows above use must be taken")
+	}
+	// Deep Search only works while Unique Server Find is on
+	m.settings.UniqueServer = false
+	if m.serverBusy(me, "s23", 0, map[string]bool{}) {
+		t.Error("Deep Search must do nothing without Unique Server Find")
+	}
+	m.settings.UniqueServer = true
+	// the retries are used up
+	if m.serverBusy(me, "s23", 3, map[string]bool{"s23": true, "s26": true}) {
+		t.Error("after the retries, a server that is not directly above must be taken")
+	}
+	if !m.serverBusy(me, "s26", 3, map[string]bool{"s23": true, "s26": true}) {
+		t.Error("after the retries, with two servers seen, the one directly above is still refused")
+	}
+	if m.serverBusy(me, "s26", 3, map[string]bool{"s26": true}) {
+		t.Error("after the retries, with only one server seen, the row runs on it")
+	}
+	// only the nearest rows count
+	m.settings.DeepPositions = 2
+	r9 := &Item{Server: "s20", fresh: true}
+	m.items = []*Item{r9, r10, r11, me}
+	if m.serverBusy(me, "s20", 0, map[string]bool{}) {
+		t.Error("the third row above is out of reach with 2 positions")
+	}
+}
+
+// Finished rows, and rows whose server is not known, are not taken into account.
+func TestUniqueServerFindSkipsFinishedRows(t *testing.T) {
+	m := &Manager{settings: Settings{UniqueServer: true, DeepSearch: true, ServerRetries: 10, DeepPositions: 2}}
+	r1, done, nameless, me := &Item{Server: "s1", fresh: true}, &Item{Server: "s2", Status: StatusComplete, fresh: true}, &Item{}, &Item{}
+	m.items = []*Item{r1, done, nameless, me}
+	if m.serverBusy(me, "s2", 0, map[string]bool{}) {
+		t.Error("the server of a finished row is not relevant")
+	}
+	if !m.serverBusy(me, "s1", 0, map[string]bool{}) {
+		t.Error("the nearest row that counts is the one above the finished and nameless ones")
+	}
+}
+
+func TestUniqueServerFindOffByDefault(t *testing.T) {
+	d := DefaultSettings()
+	if d.UniqueServer || d.DeepSearch {
+		t.Error("Unique Server Find and Deep Search should be off in a new install")
+	}
+	if d.ServerRetries != 10 || d.ServerWait != 1 || d.DeepPositions != 2 {
+		t.Errorf("defaults: %d retries, %v s, %d positions", d.ServerRetries, d.ServerWait, d.DeepPositions)
+	}
+	s := Settings{ServerRetries: 0, ServerWait: 0.01, DeepPositions: 1}
+	s.normalize()
+	if s.ServerRetries < 1 || s.ServerWait < 0.1 || s.DeepPositions < 2 {
+		t.Errorf("limits not kept: %d, %v, %d", s.ServerRetries, s.ServerWait, s.DeepPositions)
+	}
+}
+
+// A row started while the row above it runs on its server asks again until it
+// is given another one; this also works for rows that were in the list before.
+func TestUniqueServerFindAsksAgain(t *testing.T) {
+	e := newTestEnv(t, "normal", slowSite)
+	e.setSettings(func(s *Settings) { s.AutoStart, s.UniqueServer, s.ServerWait = false, true, 0.1 })
+	ids := e.addVideos(2, 4) // the mock site gives videos 2 and 4 the same server
+	e.m.Start(ids[:1])
+	e.waitFor("the first row", func() bool { return e.item(ids[0]).Status == "downloading" })
+	e.m.Start(ids[1:])
+	e.waitFor("the second row to look again", func() bool { return strings.Contains(e.item(ids[1]).Detail, "another server") })
+	e.site.MoveVideos()
+	e.waitFor("the second row", func() bool { return e.item(ids[1]).Status == "downloading" })
+	if a, b := e.item(ids[0]).Server, e.item(ids[1]).Server; a == b {
+		t.Errorf("both rows are on %s", a)
+	}
+}
+
+// If the site only ever gives one server, the row runs on it after its retries.
+func TestUniqueServerFindGivesUpWithOneServer(t *testing.T) {
+	e := newTestEnv(t, "normal", slowSite)
+	e.setSettings(func(s *Settings) { s.AutoStart, s.UniqueServer, s.ServerRetries, s.ServerWait = false, true, 2, 0.1 })
+	ids := e.addVideos(2, 4)
+	e.m.Start(ids[:1])
+	e.waitFor("the first row", func() bool { return e.item(ids[0]).Status == "downloading" })
+	e.m.Start(ids[1:])
+	e.waitFor("the second row", func() bool { return e.item(ids[1]).Status == "downloading" })
+	if e.item(ids[0]).Server != e.item(ids[1]).Server {
+		t.Error("expected both rows on the same server")
+	}
+}
+
+// A server remembered from an earlier session says nothing about where the row
+// above will download now, so it is not compared.
+func TestUniqueServerFindIgnoresServersFromAnEarlierSession(t *testing.T) {
+	m := &Manager{settings: Settings{UniqueServer: true, ServerRetries: 10, DeepPositions: 2}}
+	above, me := &Item{Server: "s26"}, &Item{}
+	m.items = []*Item{above, me}
+	if m.serverBusy(me, "s26", 0, map[string]bool{}) {
+		t.Error("an old server must not be compared")
+	}
+	above.fresh = true
+	if !m.serverBusy(me, "s26", 0, map[string]bool{}) {
+		t.Error("a server learned in this session must be compared")
+	}
+}
+
+// A row waits until the rows above it that are still looking for their server
+// have found it, so it is compared with where they really go.
+func TestUniqueServerFindWaitsForRowsAbove(t *testing.T) {
+	m := &Manager{settings: Settings{UniqueServer: true}}
+	above, me := &Item{Active: true, Status: StatusResolving, Server: "old"}, &Item{Active: true, Status: StatusResolving}
+	m.items = []*Item{above, me}
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		m.mu.Lock()
+		above.Server, above.fresh, above.settled = "new", true, true
+		m.mu.Unlock()
+	}()
+	start := time.Now()
+	m.waitForRowsAbove(context.Background(), me)
+	if time.Since(start) < 100*time.Millisecond {
+		t.Error("it did not wait for the row above")
+	}
+	m.mu.Lock()
+	above.settled = false
+	m.settings.UniqueServer = false
+	m.mu.Unlock()
+	start = time.Now()
+	m.waitForRowsAbove(context.Background(), me)
+	if time.Since(start) > 50*time.Millisecond {
+		t.Error("switched off, it must not wait")
+	}
+}
+
+// Rows that were in the list since an earlier session (with a server written
+// down then), all started together, still end up on different servers.
+func TestUniqueServerFindStartAllWithOldServers(t *testing.T) {
+	e := newTestEnv(t, "normal", slowSite)
+	e.setSettings(func(s *Settings) { s.AutoStart, s.UniqueServer, s.ServerWait = false, true, 0.1 })
+	ids := e.addVideos(2, 4) // the mock site gives videos 2 and 4 the same server
+	e.m.mu.Lock()
+	for i, it := range e.m.items {
+		it.Server = fmt.Sprintf("old%d", i)
+	}
+	e.m.mu.Unlock()
+	e.m.StartAll()
+	e.waitFor("a row to look again", func() bool {
+		return strings.Contains(e.item(ids[0]).Detail, "another server") || strings.Contains(e.item(ids[1]).Detail, "another server")
+	})
+	e.site.MoveVideos()
+	e.waitFor("both rows", func() bool { return e.item(ids[0]).Status == "downloading" && e.item(ids[1]).Status == "downloading" })
+	if a, b := e.item(ids[0]).Server, e.item(ids[1]).Server; a == b {
+		t.Errorf("both rows are on %s", a)
+	}
+}
+
+// Playlists are read ahead one at a time while Unique Server Find is on, two at a time otherwise.
+func TestLookupsGoOneAtATimeWithUniqueServerFind(t *testing.T) {
+	m := &Manager{settings: Settings{UniqueServer: true}}
+	if m.lookupLimit() != 1 {
+		t.Error("with Unique Server Find on, one lookup at a time")
+	}
+	m.settings.UniqueServer = false
+	if m.lookupLimit() != 2 {
+		t.Error("with it off, two lookups at a time")
+	}
+}
+
+// The servers that Start all finds for the rows waiting in line (Hybrid) are
+// already different from the row above: a lookup asks again like a start does.
+func TestUniqueServerFindAlsoChecksTheLookups(t *testing.T) {
+	e := newTestEnv(t, "hybrid", slowSite)
+	e.setSettings(func(s *Settings) { s.AutoStart, s.UniqueServer, s.ServerWait = false, true, 0.1 })
+	ids := e.addVideos(2, 4) // the mock site gives videos 2 and 4 the same server
+	e.m.StartAll()
+	e.waitFor("the first server", func() bool { return e.item(ids[0]).Server != "" })
+	time.Sleep(400 * time.Millisecond)
+	e.site.MoveVideos()
+	e.waitFor("the second server", func() bool { return e.item(ids[1]).Server != "" })
+	if a, b := e.item(ids[0]).Server, e.item(ids[1]).Server; a == b {
+		t.Errorf("both rows show %s", a)
+	}
+}
+
+// Pause all, then Start all straight away: rows that are still winding down
+// from the pause (busy) forget their server like the others.
+func TestStartForgetsTheServerOfRowsStillStopping(t *testing.T) {
+	m := &Manager{settings: Settings{Mode: string(ModeHybrid)}}
+	stopping := &Item{Status: StatusQueued, busy: true, Server: "f12", res: &engine.Resolved{}}
+	running := &Item{Status: StatusDownloading, busy: true, Server: "f45", res: &engine.Resolved{}}
+	done := &Item{Status: StatusComplete, Server: "f07"}
+	for _, it := range []*Item{stopping, running, done} {
+		m.forgetServerLocked(it)
+	}
+	if stopping.Server != "" || stopping.res != nil {
+		t.Errorf("a row that is still stopping kept %q", stopping.Server)
+	}
+	if running.Server != "f45" || running.res == nil {
+		t.Error("a running row must keep its server")
+	}
+	if done.Server != "f07" {
+		t.Error("a finished row must keep its server")
+	}
+}
+
+// Long Lasting Site: rows that have to wait in line are read when they are
+// started, and their saved links are used when it is their turn.
+func TestLongLastingSiteReadsWaitingRowsAtTheStart(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		e := newTestEnv(t, "series", slowSite)
+		e.setSettings(func(s *Settings) { s.AutoStart, s.LongLasting = false, on })
+		ids := e.addVideos(2, 3, 4)
+		e.m.mu.Lock()
+		for _, it := range e.m.items {
+			it.lenTried = true // their length is known, so nothing reads them ahead for that
+		}
+		e.m.mu.Unlock()
+		e.m.StartAll()
+		if on {
+			e.waitFor("all rows read at the start", func() bool { return e.site.Resolves() >= 3 && e.item(ids[0]).Status != "complete" })
+		} else {
+			e.waitFor("the first row", func() bool { return e.item(ids[0]).Status == "downloading" })
+			time.Sleep(200 * time.Millisecond)
+			if n := e.site.Resolves(); n != 1 {
+				t.Errorf("off: %d rows read while the first downloads, want 1", n)
+			}
+		}
+		for _, id := range ids {
+			e.waitComplete(id)
+		}
+		if on && e.site.Resolves() != 3 {
+			t.Errorf("on: %d reads in all, want 3 (one per row)", e.site.Resolves())
+		}
+	}
+}
+
+// With it on, links that state no expiry are not read again after 10 minutes.
+func TestLongLastingSiteKeepsLinksWithoutAnExpiry(t *testing.T) {
+	m := &Manager{}
+	old := &engine.Resolved{At: time.Now().Add(-5 * time.Hour)}
+	if !m.stale(old) {
+		t.Error("off: links 5 hours old should be read again")
+	}
+	m.settings.LongLasting = true
+	if m.stale(old) {
+		t.Error("on: links with no stated expiry are kept")
+	}
+	if !m.stale(&engine.Resolved{Expires: time.Now().Add(-time.Minute)}) {
+		t.Error("on: links that have expired are still read again")
+	}
+	if !m.stale(nil) {
+		t.Error("nothing read yet counts as stale")
+	}
+}
+
+// Rows that were read ahead can still be moved or removed; they keep their
+// saved links, the queue order decides who goes next, and nothing is read twice.
+func TestLongLastingSiteRowsCanStillBeMovedAndRemoved(t *testing.T) {
+	e := newTestEnv(t, "series", slowSite)
+	e.setSettings(func(s *Settings) { s.AutoStart, s.LongLasting = false, true })
+	ids := e.addVideos(2, 3, 4, 5)
+	e.m.mu.Lock()
+	for _, it := range e.m.items {
+		it.lenTried = true
+	}
+	e.m.mu.Unlock()
+	e.m.StartAll()
+	e.waitFor("every row read", func() bool { return e.site.Resolves() >= 4 })
+	e.m.Move(ids[2:3], "top") // video 4 jumps to the top of the line
+	e.m.Remove(ids[3:4], false)
+	var order []int64
+	deadline := time.Now().Add(30 * time.Second)
+	for len(order) < 3 && time.Now().Before(deadline) {
+		for _, id := range ids[:3] {
+			if e.item(id).Status == "complete" {
+				seen := false
+				for _, o := range order {
+					seen = seen || o == id
+				}
+				if !seen {
+					order = append(order, id)
+				}
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !reflect.DeepEqual(order, []int64{ids[0], ids[2], ids[1]}) { // the first was already running
+		t.Errorf("finished in order %v of rows %v", order, ids)
+	}
+	for _, v := range []int{2, 3, 4} {
+		if want := e.site.Expected(v, "720p", 0, 60); !bytes.Equal(e.readDone(v), want) {
+			t.Errorf("video %d differs", v)
+		}
+	}
+	if n := e.site.Resolves(); n != 4 {
+		t.Errorf("%d reads in all, want 4 (one per row, none again after moving)", n)
+	}
+}
+
+// Long Lasting Site is on in a new install and in a settings file that does not
+// mention it; a file that says false keeps its choice. It has no tick box: the
+// settings file is where it is changed.
+func TestLongLastingSiteIsOnUnlessTheFileSaysOtherwise(t *testing.T) {
+	if !DefaultSettings().LongLasting {
+		t.Error("should be on in a new install")
+	}
+	for saved, want := range map[string]bool{
+		`{"userAgent":"ua","cookie":"c"}`:                     true,
+		`{"userAgent":"ua","cookie":"c","longLasting":false}`: false,
+		`{"userAgent":"ua","cookie":"c","longLasting":true}`:  true,
+	} {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(saved), 0600); err != nil {
+			t.Fatal(err)
+		}
+		m, err := New(dir, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := m.Settings().LongLasting; got != want {
+			t.Errorf("%s: LongLasting = %v, want %v", saved, got, want)
+		}
+		m.Shutdown()
 	}
 }

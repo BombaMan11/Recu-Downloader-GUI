@@ -74,6 +74,7 @@ func setServer(it *Item, server string) {
 		server = "unknown"
 	}
 	it.Server = server
+	it.fresh = true
 }
 
 func (m *Manager) acquireResolve(ctx context.Context) bool {
@@ -98,6 +99,7 @@ func (m *Manager) scheduleLocked() {
 			m.launchLocked(it)
 		}
 	}
+	m.primeNextLocked()
 	running, pre := 0, 0
 	busyServers := map[string]bool{}
 	for _, it := range m.items {
@@ -112,13 +114,13 @@ func (m *Manager) scheduleLocked() {
 		}
 	}
 	waiting := func(it *Item) bool {
-		return it.Active && it.Status == StatusQueued && !it.Forced && !it.busy
+		return it.Active && it.Status == StatusQueued && !it.Forced && !it.busy && !it.Prime
 	}
 	switch Mode(m.settings.Mode) {
 	case ModeSeries:
 		if running == 0 {
 			for _, it := range m.items {
-				if it.Active && it.Status == StatusQueued && !it.Forced {
+				if it.Active && it.Status == StatusQueued && !it.Forced && !it.Prime {
 					if !it.busy { // a busy row is about to be free: nothing may jump ahead of it
 						m.launchLocked(it)
 					}
@@ -133,11 +135,11 @@ func (m *Manager) scheduleLocked() {
 		// is still unknown: it might be the same server and that row is above.
 		blocked := false
 		for _, it := range m.items {
-			if !it.Active || it.Status != StatusQueued || it.Forced {
+			if !it.Active || it.Status != StatusQueued || it.Forced || it.Prime {
 				continue
 			}
 			if it.Server == "" {
-				if !it.busy && pre < 2 && !time.Now().Before(it.preWait) {
+				if !it.busy && pre < m.lookupLimit() && !time.Now().Before(it.preWait) {
 					m.preResolveLocked(it)
 					pre++
 				}
@@ -170,9 +172,22 @@ func (m *Manager) scheduleLocked() {
 			running++
 		}
 	}
+	// Long Lasting Site: read the rows that have to wait, now, while the site
+	// still lets us in, instead of when their turn comes
+	if m.settings.LongLasting {
+		for _, it := range m.items {
+			if pre >= m.lookupLimit() {
+				break
+			}
+			if waiting(it) && it.res == nil && !time.Now().Before(it.preWait) {
+				m.preResolveLocked(it)
+				pre++
+			}
+		}
+	}
 	// find the length of the videos that do not start yet, a couple at a time
 	for _, it := range m.items {
-		if pre >= 2 {
+		if pre >= m.lookupLimit() {
 			break
 		}
 		if it.needsLength() {
@@ -183,9 +198,12 @@ func (m *Manager) scheduleLocked() {
 }
 
 func (m *Manager) launchLocked(it *Item) {
+	if !it.priming {
+		it.Prime = false // started for real: no separate first pieces
+	}
 	ctx, cancel := context.WithCancel(m.rootCtx)
 	it.cancel = cancel
-	it.busy = true
+	it.busy, it.settled = true, false
 	it.Status = StatusResolving
 	it.Error = ""
 	it.stage = "Starting"
@@ -207,14 +225,7 @@ func (m *Manager) preResolveLocked(it *Item) {
 	go func() {
 		defer m.wg.Done()
 		env := m.envFor(ctx, it, false)
-		var res *engine.Resolved
-		var err error
-		if m.acquireResolve(ctx) {
-			res, err = engine.Resolve(env, it.URL)
-			m.releaseResolve()
-		} else {
-			err = ctx.Err()
-		}
+		res, err := m.lookupResolve(ctx, it, env)
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		it.busy, it.preResolving, it.cancel = false, false, nil
@@ -301,6 +312,10 @@ func (m *Manager) run(it *Item, ctx context.Context) {
 	defer m.mu.Unlock()
 	it.busy, it.cancel = false, nil
 	it.speed, it.etaMin, it.note = 0, 0, ""
+	it.priming, it.settled = false, false
+	if !m.shutdown {
+		it.Prime = false // however the run ended, the first pieces are done with
+	}
 	switch {
 	case it.recat != nil && !it.removed:
 		m.applyRecategoryLocked(it, *it.recat)
@@ -331,12 +346,14 @@ func (m *Manager) run(it *Item, ctx context.Context) {
 
 func (m *Manager) runItem(it *Item, ctx context.Context) error {
 	refreshes, waits := 0, 0 // since the last segment that came through
+	tries := 0               // Unique Server Find
+	seen := map[string]bool{}
 	for {
 		env := m.envFor(ctx, it, true) // a cookie replaced while waiting is used from now on
 		m.mu.Lock()
 		res := it.res
 		m.mu.Unlock()
-		if res == nil || res.Stale(30*time.Second) {
+		if m.stale(res) {
 			m.setStatus(it, ctx, StatusResolving)
 			if !m.acquireResolve(ctx) {
 				return ctx.Err()
@@ -358,6 +375,24 @@ func (m *Manager) runItem(it *Item, ctx context.Context) error {
 			if nerr != nil {
 				return nerr
 			}
+		}
+		m.waitForRowsAbove(ctx, it)
+		if m.serverBusy(it, res.Server, tries, seen) {
+			tries++
+			m.mu.Lock()
+			it.res = nil
+			it.stage = "Looking for another server"
+			if tries <= m.settings.ServerRetries {
+				it.stage = fmt.Sprintf("Looking for another server (%d/%d)", tries, m.settings.ServerRetries)
+			}
+			wait := time.Duration(m.settings.ServerWait * float64(time.Second))
+			m.changedLocked(false)
+			m.mu.Unlock()
+			tools.Sleep(ctx, wait)
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			continue
 		}
 		m.mu.Lock()
 		if it.FileBase == "" {
@@ -407,6 +442,18 @@ func (m *Manager) runItem(it *Item, ctx context.Context) error {
 			it.speed = p.Speed
 			it.etaMin = p.EtaMin
 			it.note = ""
+			if it.priming && p.Next-p.Start >= primeSegments {
+				// the first pieces are in: stop here and queue or pause the row
+				it.Prime = false
+				if it.cancel != nil {
+					it.cancel()
+				}
+				it.Status = StatusPaused
+				if it.primeWant {
+					it.Status = StatusQueued
+				}
+				it.speed, it.etaMin = 0, 0
+			}
 			m.changedLocked(true)
 		})
 		if err == nil {
@@ -531,8 +578,157 @@ func (m *Manager) finish(it *Item, src string) error {
 	return nil
 }
 
+// serverBusy tells whether Unique Server Find wants the row to ask the site
+// for another server: the server is the one of the row directly above it, or
+// with Deep Search of any of the rows within the chosen number of positions
+// above it (finished rows and rows with no known server are not counted).
+// After the retries are used up only the row directly above still counts, and
+// only if the row has been given two different servers; a site that only ever
+// gives one is left alone. seen collects the servers the row has been given.
+func (m *Manager) serverBusy(it *Item, server string, tries int, seen map[string]bool) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	it.settled = true // unless it is sent away below
+	if !m.settings.UniqueServer {
+		return false
+	}
+	seen[server] = true
+	n := 1
+	if m.settings.DeepSearch && tries < m.settings.ServerRetries {
+		n = m.settings.DeepPositions
+	} else if tries >= m.settings.ServerRetries && len(seen) < 2 {
+		return false
+	}
+	at := -1
+	for i, o := range m.items {
+		if o == it {
+			at = i
+		}
+	}
+	for i := at - 1; i >= 0 && n > 0; i-- {
+		o := m.items[i]
+		if o.Status == StatusComplete || o.Server == "" || o.Server == "unknown" || !o.fresh {
+			continue
+		}
+		if o.Server == server {
+			it.settled = false
+			return true
+		}
+		n--
+	}
+	return false
+}
+
+// stale tells whether the links read earlier have to be read again. With Long
+// Lasting Site on, links that state no expiry are kept until a download is
+// refused (they are otherwise read again after 10 minutes).
+func (m *Manager) stale(res *engine.Resolved) bool {
+	if res == nil {
+		return true
+	}
+	m.mu.Lock()
+	keep := m.settings.LongLasting && res.Expires.IsZero()
+	m.mu.Unlock()
+	return !keep && res.Stale(30*time.Second)
+}
+
+// lookupLimit is how many playlists are read ahead at once: one at a time with
+// Unique Server Find, so each row can be compared with the one above it.
+func (m *Manager) lookupLimit() int {
+	if m.settings.UniqueServer {
+		return 1
+	}
+	return 2
+}
+
+// lookupResolve reads the playlist of a row that is not starting yet. With
+// Unique Server Find on it asks again while the server is the one the row
+// above has, like a start does, so the servers shown in the list already differ.
+func (m *Manager) lookupResolve(ctx context.Context, it *Item, env *engine.Env) (*engine.Resolved, error) {
+	seen := map[string]bool{}
+	for tries := 0; ; tries++ {
+		if !m.acquireResolve(ctx) {
+			return nil, ctx.Err()
+		}
+		res, err := engine.Resolve(env, it.URL)
+		m.releaseResolve()
+		if err != nil {
+			return res, err
+		}
+		m.waitForRowsAbove(ctx, it)
+		if !m.serverBusy(it, res.Server, tries, seen) {
+			return res, nil
+		}
+		m.mu.Lock()
+		wait := time.Duration(m.settings.ServerWait * float64(time.Second))
+		m.mu.Unlock()
+		tools.Sleep(ctx, wait)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
+}
+
+// waitForRowsAbove holds a row back (up to 30 seconds) while a row above it is
+// still looking for its server, so that it is compared with the server that
+// row really gets and not with the one it had before.
+func (m *Manager) waitForRowsAbove(ctx context.Context, it *Item) {
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); {
+		m.mu.Lock()
+		undecided := false
+		if m.settings.UniqueServer {
+			for _, o := range m.items {
+				if o == it {
+					break
+				}
+				if o.Active && o.Status == StatusResolving && !o.settled {
+					undecided = true
+					break
+				}
+			}
+		}
+		m.mu.Unlock()
+		if !undecided || ctx.Err() != nil {
+			return
+		}
+		tools.Sleep(ctx, 50*time.Millisecond)
+	}
+}
+
+// primeSegments is how many pieces of a new row are downloaded before it
+// pauses or goes back in line (see primeNextLocked).
+const primeSegments = 2
+
+// primeNextLocked downloads the first pieces of the new rows, one row at a
+// time and top to bottom, whatever the mode is (like Force start). That reads
+// the playlist, so the start, end and length are fixed, and the unfinished file
+// shows up in its folder. The row then goes back in line if it was waiting to
+// start, or stays paused. Rows the person started or paused meanwhile are left
+// alone.
+func (m *Manager) primeNextLocked() {
+	for _, it := range m.items {
+		if it.priming {
+			return
+		}
+	}
+	for _, it := range m.items {
+		if it.Prime && it.Active && !it.Forced && !it.busy && (it.Status == StatusPaused || it.Status == StatusQueued) {
+			it.priming = true
+			it.primeWant = it.Status == StatusQueued
+			m.launchLocked(it)
+			return
+		}
+	}
+}
+
 // uniqueBaseLocked picks a file name that no other row or file uses
-// (name, name(1), name(2), ...).
+// (name, name_01, name_02, ... name_99, name_100).
+//
+// Rows of the same video (the same link with different start and end times)
+// all get the same name, so they are numbered in the order they have in the
+// list: the first is name, the next name_01, and so on. That way the numbers
+// do not depend on which row happened to start first (in Normal mode they all
+// start at once and whichever the site answers first used to take name).
 func (m *Manager) uniqueBaseLocked(name string, self *Item) string {
 	inc := m.incDirLocked(self)
 	done := m.doneDirLocked(self)
@@ -547,15 +743,31 @@ func (m *Manager) uniqueBaseLocked(name string, self *Item) string {
 		}
 		return false
 	}
-	if !taken(name) {
-		return name
+	first := 0 // rows of the same link above this one in the list
+	for _, o := range m.items {
+		if o == self {
+			break
+		}
+		if o.URL == self.URL {
+			first++
+		}
 	}
-	for i := 1; ; i++ {
-		cand := fmt.Sprintf("%s(%d)", name, i)
+	for i := first; ; i++ {
+		cand := numberedName(name, i)
 		if !taken(cand) {
 			return cand
 		}
 	}
+}
+
+// numberedName is the name of the i-th file with the same name: i = 0 is name
+// itself, then name_01, name_02 ... name_99 (two digits, a leading zero below
+// 10) and name_100 after that.
+func numberedName(name string, i int) string {
+	if i <= 0 {
+		return name
+	}
+	return fmt.Sprintf("%s_%02d", name, i)
 }
 
 func exists(path string) bool {
@@ -566,7 +778,7 @@ func exists(path string) bool {
 func uniquePath(dir, base, ext string) string {
 	p := filepath.Join(dir, base+ext)
 	for i := 1; exists(p); i++ {
-		p = filepath.Join(dir, fmt.Sprintf("%s(%d)%s", base, i, ext))
+		p = filepath.Join(dir, numberedName(base, i)+ext)
 	}
 	return p
 }
@@ -649,14 +861,7 @@ func (m *Manager) lookupLengthLocked(it *Item) {
 	go func() {
 		defer m.wg.Done()
 		env := m.envFor(ctx, it, false)
-		var res *engine.Resolved
-		var err error
-		if m.acquireResolve(ctx) {
-			res, err = engine.Resolve(env, it.URL)
-			m.releaseResolve()
-		} else {
-			err = ctx.Err()
-		}
+		res, err := m.lookupResolve(ctx, it, env)
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		it.busy, it.lookingUp, it.cancel = false, false, nil
@@ -682,6 +887,6 @@ func (m *Manager) lookupLengthLocked(it *Item) {
 // needsLength: a whole-video row whose length is not known yet and that is
 // not being worked on (finished and failed rows are left alone).
 func (it *Item) needsLength() bool {
-	return it.SectionRef == nil && it.VideoSecs <= 0 && !it.lenTried && !it.busy &&
+	return it.SectionRef == nil && it.VideoSecs <= 0 && !it.lenTried && !it.busy && !it.Prime &&
 		(it.Status == StatusPaused || it.Status == StatusQueued)
 }
