@@ -86,11 +86,36 @@ func Save(base string, l Locations) error {
 	if err != nil {
 		return err
 	}
+	return WriteFileAtomic(path, data, 0644)
+}
+
+// WriteFileAtomic replaces path with data so that a crash or power cut leaves
+// either the old file or the new one, never an empty or half-written file. The
+// data goes to path+".tmp" and is forced to the disk before the swap: without
+// that, Windows may record the rename but not the contents, and the file comes
+// back empty after a crash.
+func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // DataDir is the full path of the data folder.
