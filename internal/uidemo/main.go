@@ -62,6 +62,8 @@ func main() {
 		}
 		if !*defaults {
 			s.AutoStart, s.AutoResume = true, true
+			s.FirstPieces = false
+			s.LongLasting = false
 			// the listener as it was before the defaults changed: off, archive and backups on
 			s.Listen.Enabled, s.Listen.AllowPrivate = false, false
 			s.Listen.NoArchive, s.Listen.NoBackups = false, false
