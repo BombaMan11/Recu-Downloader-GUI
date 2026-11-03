@@ -14,13 +14,14 @@ three download modes, and settings that are remembered.
    (**Replace cookie**) at the top right of the main window, next to the clipboard button. It
    asks you to confirm, then saves what you copied as the cookie, nothing else is changed.
    Downloads that are running or waiting are never left on the old cookie: they are paused
-   first then the cookie is replaced.
-   
+   first, as if you pressed **Pause all**, and the cookie is replaced. A message says
+   "Downloads Paused to Replace Cookies". Press **Start** (or **Start all**) when you want
+   them to carry on with the new cookie. If you answer No to the question, nothing changes.
    Saving a different cookie in Settings asks the same question and does the same.
    The **Replace cookie** button in Settings (next to the box) does the same with what you
    copied. The program reads the clipboard itself, so the browser never asks for permission.
    If there is no text on the clipboard, nothing is replaced.
-4. Paste links in the box at the top, one per line, and press **Add to list**:
+3. Paste links in the box at the top, one per line, and press **Add to list**:
 
    ```
    https://Recu.me/video/1234567/play
@@ -43,6 +44,51 @@ three download modes, and settings that are remembered.
 | Start / End / Duration | Which part of the video is downloaded, as `hh:mm:ss`. A whole video starts at `00:00:00`; its End (and so its Duration) is the length of the video, which the program reads from the playlist in the background shortly after you add the link (no download is started), so it shows up a moment later. Duration is End minus Start. |
 | Server | Which server the video comes from. Same colour = same server. |
 | Server pill | `Next` / `#2`… = the order in which that server's rows will start (Hybrid). |
+
+**Several parts of one video.** Rows with the same link and different start and end times
+download to the same file name. They are numbered in the order they have in the list, whichever
+starts first: the top row is `name.ts`, the next `name_01.ts`, then `name_02.ts` and so on up to
+`name_99.ts` (two digits, with a leading zero below 10). A name that is already taken on disk is
+skipped. Files made by an earlier version, with `(1)` in the name, are not renamed. Settings →
+Downloads → **Add the bottom link first** (off by default) turns the links you add together upside
+down: the bottom link in the box becomes the first row of that batch, so it gets the plain name.
+Rows already in the list are not moved.
+
+**Preload Files.** Settings → Downloads → **Preload Files** (on by default). Each new row downloads
+its first 2 pieces, one row at a time from the top, whatever the mode is, and then pauses. That reads
+the video, so its start, end and length are fixed and its unfinished file is already in the folder.
+The row then goes back in line if *Start new rows as soon as they are added* is on, and stays
+paused if it is off. A row you start or pause yourself meanwhile is left alone. Pressing Start
+(or Start all, or *Start new rows*) on a row that has no progress yet does the same, also for rows
+that were in the list before. Force start does not preload: it downloads at once anyway.
+
+**Unique Server Find** (Settings → Experimental, off by default). A server often has a cap that is
+shared by every download on it. With this on, a row that is about to start (Start, Start all, Force
+start, Start new rows and Preload Files all count) is not allowed to use the same server as the row
+directly above it in the list. If it is given that server it waits and reads its link again to be
+given another one, up to **Retries** times (10 by default), **Time Between Retries** apart (1 second
+by default, 0.1 at the least). Finished rows, and rows whose server is not known yet or is only
+remembered from an earlier session, are not taken into account. A row waits (30 seconds at the
+most) while a row above it is still looking for its server, so it is compared with the server
+that row really gets. If the site only ever hands out one server, the row downloads on it once the retries
+are used up; if it has been given two, it keeps asking until it gets the one that is not directly
+above it. The row shows *Looking for another server (n/10)* meanwhile. The servers that Start all
+finds for rows still waiting in line are checked the same way, and with this on the playlists are
+read ahead one at a time, in list order, instead of two at a time.
+
+**Deep Search** (only while Unique Server Find is ticked) makes a row avoid the servers of the
+**Positions to check** rows above it (2 by default) instead of only the row directly above. For
+example, with row 10 on server 23 and row 11 on server 26, row 12 looks for a server that is neither;
+if it cannot find one, it takes another server than 26.
+
+**Long Lasting Site** (Settings → Experimental, on by default). The original program read every
+video's page at the very start, while the cookie was fresh, and then only downloaded. This program
+normally reads a row when its turn comes, which can be hours later, when the cookie may have run
+out and the site refuses the request. With it on, every row you start is read at once, one list
+pass after another (rows that start right away are read as they start), and the links are kept
+until their turn. They are only read again when they have expired or a download is refused. Links
+that state no expiry are kept too, instead of being read again after 10 minutes. This only helps
+if the links last as long as the queue.
 
 **Resize columns** by dragging the border on the right of a heading. The widths are saved in
 `settings.json`, so they are kept after the program is closed. Settings → Table → *Reset column
@@ -93,7 +139,7 @@ replaces, shortens or deletes what is in it.
   again and the write retried. Recurbate also takes a `<file>.lock` file while it writes, and
   waits for it if another program that uses the same lock file is writing.
 - Once a day, before the first change, the file is copied to `<file>.backups\` (for example
-  `Archive.txt.backups\Archive.txt.2026-10-18.bak`). A backup is never
+  `All-Stored-links.txt.backups\All-Stored-links.txt.2026-10-18.bak`). A backup is never
   overwritten and Recurbate never deletes one. `added.log` there lists every line added
   with the time, so the file can be rebuilt from the newest `.bak` plus `added.log`.
 - A file that is **missing** but has backups is not created again (that would start a new
@@ -139,7 +185,8 @@ box   ["https://Recu.me/video/xxxxxxx/play","55:00","1:10:00","1:30:00"]
 ```
 
 If what you copied is a whole entry such as
-`["https://Recu.me/video/xxxxxxx/play","0:00:00","1:30:00","1:30:00"],`, the box gets that **whole entry**, with its start and end
+`["https://Recu.me/video/xxxxxxx/play","0:00:00","1:30:00","1:30:00"],` (as the browser script's
+*Next* and *Full Link* buttons copy), the box gets that **whole entry**, with its start and end
 times (without the trailing comma), while the text file gets only the plain link. A plain link
 copied on its own goes into both as it is. Another clip of the same video (different times) is a new
 entry in the box; the file keeps the link once. A line that is already in the box is not put
@@ -258,9 +305,25 @@ Nothing is written to AppData.
 
 **Defaults on a new install.** *Start new rows as soon as they're added* and *Continue
 unfinished downloads when Recurbate starts* are both off, so nothing downloads until you press
-Start. The link listener is on (see Link listener), with the Archive and Backups boxes off, the
+Start (new rows still download their first 2 pieces and then pause; *Preload Files* is on). The link listener is on (see Link listener), with the Archive and Backups boxes off, the
 text file blank, *Skip links that are already in the file* on and *Also read copies from private
 windows* on. Settings saved by an earlier version keep the values they already have.
+
+## If the computer crashes
+
+`queue.json` (your list) and `settings.json` are written so that a crash or power cut leaves
+either the old file or the new one: the new copy is written to a `.tmp` file and forced onto the
+disk before it replaces the old one. Next to each there is also a `.bak` copy of the previous
+good version, refreshed at most every 30 seconds and never made from a file that is empty or
+damaged.
+
+If a file is still found empty or damaged at start, Recurbate does not stop with an error. It
+moves the bad file aside as `queue.json.damaged-<date>-<time>` (an empty one is just removed),
+puts the `.bak` copy back, and shows a banner at the top of the window saying what happened and
+that anything changed in the last half minute or so is lost. Press **Dismiss** to hide the banner.
+With no usable `.bak` it starts with an empty list (or default settings) and says so; the
+damaged file is kept so nothing is thrown away. Partly downloaded videos stay in the unfinished
+folder. Downloads already finished are not affected.
 
 ## Closing
 
@@ -295,18 +358,18 @@ Edge is already part of Windows.
    `git clone` with the repository address instead.) Open the extracted folder until you see
    `main.go`, `go.mod` and `build.bat`.
 4. **Set the version (optional).** Right-click `build.bat`, choose **Edit**, and change
-   `vX.X.X` to the version you want shown at the bottom of the window, for example `v1.0.0`.
+   `v3.1.X` to the version you want shown at the bottom of the window, for example `v3.1.4`.
 5. **Build.** Double-click `build.bat`. A black window shows the build; when it says
    `Built Recu.exe`, the new `Recu.exe` is in the same folder. The first build takes a minute.
    `build.bat` contains:
 
    ```
-   go build -trimpath -ldflags="-s -w -H=windowsgui -X main.tag=vX.X.X" -buildvcs=false -o Recu.exe
+   go build -trimpath -ldflags="-H=windowsgui -s -w -X main.tag=v3.1.X" -buildvcs=false -o Recu.exe
    ```
 
+   `-H=windowsgui` stops a black console window from opening next to the program,
    `-trimpath` leaves your folder names out of the file, `-buildvcs=false` leaves out Git
-   details, and `-s -w` makes it smaller. To stop the black console window from opening next to
-   the program, add `-H=windowsgui` inside the quotes: `-ldflags="-H=windowsgui -s -w -X main.tag=vX.X.X"`.
+   details, and `-s -w` makes it smaller.
 6. **Run it.** Double-click `Recu.exe` and fill in the User-Agent and Cookie in Settings.
 
 ### Check that Recu.exe does not show where it was built

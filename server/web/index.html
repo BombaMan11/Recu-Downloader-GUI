@@ -58,6 +58,11 @@
     <button class="btn" id="credsBtn" type="button">Open settings</button>
   </div>
 
+  <div class="banner warn" id="recoveryBanner" role="alert" hidden>
+    <span id="recoveryText"></span>
+    <button class="btn" id="recoveryBtn" type="button">Dismiss</button>
+  </div>
+
   <nav class="toolbar" aria-label="Downloads">
     <button class="tb" data-action="start" data-needs="sel" title="Start the selected rows (they follow the mode)"><svg class="ic c-ok"><use href="#i-play"/></svg>Start</button>
     <button class="tb" data-action="pause" data-needs="sel" title="Pause the selected rows"><svg class="ic c-warn"><use href="#i-pause"/></svg>Pause</button>
@@ -227,10 +232,46 @@
           <input type="number" id="setRes" min="0" step="1" placeholder="e.g. 720">
           <div class="help">0 means the best quality available.</div>
         </div>
+        <label class="check"><input type="checkbox" id="setBottomFirst"><span>Add the bottom link first: when several links are added at once, the bottom link becomes the first row and the top link the last</span></label>
+        <div class="field">
+          <label class="check"><input type="checkbox" id="setFirstPieces"><span>Preload Files</span></label>
+          <div class="help">When enabled, new URLs will have their first two frames downloaded to allocate their file in the Unfinished Folder</div>
+        </div>
         <label class="check"><input type="checkbox" id="setAutoStart"><span>Start new rows as soon as they are added</span></label>
         <label class="check"><input type="checkbox" id="setAutoResume"><span>Continue unfinished downloads when Recurbate starts</span></label>
       </div>
 
+
+      <div class="group">
+        <h2>Experimental</h2>
+        <div class="field">
+          <label class="check"><input type="checkbox" id="setUniqueServer"><span>Unique Server Find</span></label>
+          <div class="help">When enabled, a URL that is about to start is not allowed to use the same server as the URL directly above it in the list.</div>
+        </div>
+        <div class="field">
+          <label for="setServerRetries">Retries</label>
+          <input type="number" id="setServerRetries" min="1" max="100" step="1">
+          <div class="help">How many times a URL asks for another server before it downloads on the server it has.</div>
+        </div>
+        <div class="field">
+          <label for="setServerWait">Time Between Retries (seconds)</label>
+          <input type="number" id="setServerWait" min="0.1" max="60" step="0.1">
+        </div>
+        <div class="field">
+          <label class="check"><input type="checkbox" id="setDeepSearch"><span>Deep Search</span></label>
+          <div class="help">When enabled, a URL also avoids the servers of the URLs further up the list, as many as set in Positions to check. If it cannot find one, it takes another server than the one directly above it, when the site offers one.</div>
+        </div>
+        <div class="field">
+          <label for="setDeepPositions">Positions to check</label>
+          <input type="number" id="setDeepPositions" min="2" max="20" step="1">
+          <div class="help">How many URLs above it are compared. For example, with 2, row 12 avoids the servers of rows 11 and 10.</div>
+        </div>
+        <div class="field">
+          <label class="check"><input type="checkbox" id="setLongLasting"><span>Long Lasting Site</span></label>
+          <div class="help">Reads the URLs at the start instead of reading the URLs when it's time to download</div>
+        </div>
+      </div>
+      </div>
 
       <div class="group">
         <h2>Appearance</h2>

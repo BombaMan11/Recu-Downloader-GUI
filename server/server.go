@@ -317,6 +317,8 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 		m.Remove(req.IDs, false)
 	case "removefiles":
 		m.Remove(req.IDs, true)
+	case "dismissrecovery":
+		m.DismissRecovery()
 	case "clearcompleted":
 		m.ClearCompleted()
 	case "m3u8":

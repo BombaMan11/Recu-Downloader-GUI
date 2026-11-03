@@ -581,6 +581,7 @@
     });
   });
 
+  $('#recoveryBtn').addEventListener('click', () => act('dismissrecovery', []));
   $('#openDone').addEventListener('click', () => openFolder('done'));
   async function openFolder(which, id) {
     try { await api('open', id === undefined ? { which } : { which, id }); } catch (err) { toast(err.message, 'error'); }
@@ -710,7 +711,7 @@
     ['Start', 'start'], ['Pause', 'pause'], ['Force start', 'forcestart'], '-',
     ['Set active', 'activate'], ['Set inactive', 'deactivate'], '-',
     ['Move to top', 'top'], ['Move up', 'up'], ['Move down', 'down'], ['Move to bottom', 'bottom'], '-',
-    ['Get playlist (.m3u8)', 'm3u8'], ['Copy link', 'copy'], ['Show file in folder', 'reveal'], ['Open Done folder', 'opendone'], '-',
+    ['Get playlist (.m3u8)', 'm3u8'], ['Copy link', 'copy'], ['Copy extended link', 'copyext'], ['Show file in folder', 'reveal'], ['Open Done folder', 'opendone'], '-',
     ['Remove…', 'remove', 'danger'],
   ];
   function categoryMenu() {
@@ -778,6 +779,28 @@
       const urls = state.snap.items.filter((it) => state.selected.has(it.id)).map((it) => it.url).join('\n');
       try { await navigator.clipboard.writeText(urls); toast('Copied ' + plural(ids.length, 'link') + '.', 'ok'); }
       catch (_) { toast('Could not copy to the clipboard.', 'error'); }
+      return;
+    }
+    if (action === 'copyext') { // ["link","start","end","length of the video"], one line per selected row
+      const mine = () => state.snap.items.filter((it) => state.selected.has(it.id));
+      const unknown = () => mine().filter((it) => it.endSec < 0).length;
+      const coming = () => mine().filter((it) => it.endSec < 0 && it.lengthComing).length;
+      if (coming()) { // being looked up in the background: give it up to 8 seconds. A lookup that failed is not waited for.
+        toast('Finding the length of ' + plural(coming(), 'video') + '…', 'info');
+        for (let i = 0; i < 16 && coming(); i++) { await new Promise((r) => setTimeout(r, 500)); await refresh(); }
+      }
+      const t = (s) => fmtClock(s).replace(/^0/, '');
+      const lines = mine().map((it) => {
+        if (it.endSec < 0) return it.url;
+        const f = [it.url, t(it.startSec), t(it.endSec)];
+        if (it.videoSec > 0) f.push(t(it.videoSec));
+        return '[' + f.map((x) => JSON.stringify(x)).join(',') + ']';
+      });
+      const plain = unknown();
+      try {
+        await navigator.clipboard.writeText(lines.join('\n'));
+        toast('Copied ' + plural(lines.length, 'extended link') + '.' + (plain ? ' ' + plural(plain, 'video') + ' stayed a plain link: its length could not be found.' : ''), plain ? 'warn' : 'ok');
+      } catch (_) { toast('Could not copy to the clipboard.', 'error'); }
       return;
     }
     if (action === 'remove') return removeRows(ids);
@@ -866,6 +889,8 @@
     $('#stSpeed').textContent = fmtSpeed(t.speed) || '0 B/s';
     $('#stVersion').textContent = snap.app ? 'v' + snap.app.replace(/^v/, '') : '';
     $('#credsBanner').hidden = !snap.needCreds;
+    $('#recoveryBanner').hidden = !snap.recovery;
+    $('#recoveryText').textContent = snap.recovery || '';
   }
 
   function showNotices(snap) {
@@ -946,7 +971,7 @@
     done: $('#setDone'), inc: $('#setIncomplete'), m3u8: $('#setM3U8'),
     dataDir: $('#setDataDir'),
     parallel: $('#setParallel'), res: $('#setRes'),
-    autoStart: $('#setAutoStart'), autoResume: $('#setAutoResume'),
+    bottomFirst: $('#setBottomFirst'), firstPieces: $('#setFirstPieces'), uniqueServer: $('#setUniqueServer'), serverRetries: $('#setServerRetries'), serverWait: $('#setServerWait'), deepSearch: $('#setDeepSearch'), deepPositions: $('#setDeepPositions'), longLasting: $('#setLongLasting'), autoStart: $('#setAutoStart'), autoResume: $('#setAutoResume'),
     listenOn: $('#setListenOn'), listenFile: $('#setListenFile'), listenArchive: $('#setListenArchive'), listenBackups: $('#setListenBackups'), listenPat: $('#setListenPatterns'), listenSkip: $('#setListenSkip'), listenPrivate: $('#setListenPrivate'),
   };
 
@@ -963,6 +988,15 @@
   F.listenArchive.addEventListener('change', syncArchive);
   F.listenBackups.addEventListener('change', () => { backupsWanted = F.listenBackups.checked; });
 
+  // Deep Search needs Unique Server Find, and its positions need Deep Search.
+  function syncExperimental() {
+    if (!F.uniqueServer.checked) F.deepSearch.checked = false;
+    F.deepSearch.disabled = !F.uniqueServer.checked;
+    F.deepPositions.disabled = !F.deepSearch.checked;
+  }
+  F.uniqueServer.addEventListener('change', syncExperimental);
+  F.deepSearch.addEventListener('change', syncExperimental);
+
   function fillSettings(s) {
     F.ua.value = s.userAgent || '';
     F.cookie.value = s.cookie || '';
@@ -973,6 +1007,15 @@
     renderCategoryEditor(s.categories || []);
     F.parallel.value = s.maxParallel || 0;
     F.res.value = s.maxResolution || 0;
+    F.bottomFirst.checked = !!s.addBottomFirst;
+    F.firstPieces.checked = !!s.firstPieces;
+    F.uniqueServer.checked = !!s.uniqueServer;
+    F.serverRetries.value = s.serverRetries || 10;
+    F.serverWait.value = s.serverWait || 1;
+    F.deepSearch.checked = !!s.deepSearch;
+    F.deepPositions.value = s.deepPositions || 2;
+    F.longLasting.checked = !!s.longLasting;
+    syncExperimental();
     F.autoStart.checked = !!s.autoStart;
     F.autoResume.checked = !!s.autoResume;
     const L = s.listen || {};
@@ -997,7 +1040,7 @@
       dataDir: F.dataDir.value,
       categories: readCategoryEditor(),
       maxParallel: parseInt(F.parallel.value, 10) || 0, maxResolution: parseInt(F.res.value, 10) || 0,
-      autoStart: F.autoStart.checked, autoResume: F.autoResume.checked,
+      addBottomFirst: F.bottomFirst.checked, firstPieces: F.firstPieces.checked, uniqueServer: F.uniqueServer.checked, serverRetries: parseInt(F.serverRetries.value, 10) || 10, serverWait: parseFloat(F.serverWait.value) || 1, deepSearch: F.deepSearch.checked && F.uniqueServer.checked, deepPositions: parseInt(F.deepPositions.value, 10) || 2, longLasting: F.longLasting.checked, autoStart: F.autoStart.checked, autoResume: F.autoResume.checked,
       listen: { enabled: F.listenOn.checked, file: F.listenFile.value, noArchive: !F.listenArchive.checked, noBackups: !backupsWanted, patterns: F.listenPat.value.split('\n'), skipDuplicates: F.listenSkip.checked, allowPrivate: F.listenPrivate.checked },
       theme, mode: state.settings ? state.settings.mode : 'hybrid',
     };

@@ -162,6 +162,9 @@ button { cursor: pointer; }
   background: var(--accent-soft); border-bottom: 1px solid var(--line);
 }
 .banner .btn { height: 24px; }
+.banner.warn { background: color-mix(in srgb, var(--warn) 16%, var(--surface)); }
+.banner.warn span { white-space: pre-line; }
+.banner span { flex: 1; }
 
 /* ---------- toolbar ---------- */
 .toolbar {
