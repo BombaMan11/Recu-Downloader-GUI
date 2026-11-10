@@ -249,6 +249,8 @@ func (m *Manager) preResolveLocked(it *Item) {
 			setServer(it, res.Server)
 		case isCancel(err):
 			it.lenTried = false
+		case m.settings.SkipRefused && engine.Blocked(err) && it.Status == StatusQueued:
+			m.skipLocked(it, err)
 		case engine.Temporary(err) && it.preBlocks < len(engine.BlockedWaits) && it.Status == StatusQueued:
 			// the site refused (or was not reachable): stay in line and ask
 			// again later instead of failing a row that never got to start
@@ -334,6 +336,8 @@ func (m *Manager) run(it *Item, ctx context.Context) {
 		if it.Status == StatusResolving || it.Status == StatusDownloading {
 			it.Status = StatusQueued
 		}
+	case errors.As(err, new(*skipError)):
+		m.skipLocked(it, errors.Unwrap(err))
 	default:
 		it.Status = StatusError
 		it.Error = err.Error()
@@ -342,6 +346,30 @@ func (m *Manager) run(it *Item, ctx context.Context) {
 	}
 	m.changedLocked(true)
 	m.kick()
+}
+
+// skipError is how a run reports that the site refused it and Skip Site
+// Refused is on.
+type skipError struct{ err error }
+
+func (e *skipError) Error() string { return e.err.Error() }
+func (e *skipError) Unwrap() error { return e.err }
+
+// skipLocked marks a row the site refused as skipped; the list moves on and
+// Start tries it again.
+func (m *Manager) skipLocked(it *Item, err error) {
+	it.preBlocks = 0
+	it.Status = StatusSkipped
+	it.Error = err.Error()
+	it.Forced = false
+	m.notifyLocked("warn", fmt.Sprintf("Skipped - Site Refused: %s", displayName(it)))
+}
+
+// skipsRefusal reports whether err is a refusal that is skipped, not retried.
+func (m *Manager) skipsRefusal(err error) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.settings.SkipRefused && engine.Blocked(err)
 }
 
 func (m *Manager) runItem(it *Item, ctx context.Context) error {
@@ -364,7 +392,7 @@ func (m *Manager) runItem(it *Item, ctx context.Context) error {
 				if m.waitOut(ctx, it, &waits, err) {
 					continue
 				}
-				return finalError(ctx, err)
+				return m.finalError(ctx, err)
 			}
 			res = r
 			m.mu.Lock()
@@ -481,7 +509,7 @@ func (m *Manager) runItem(it *Item, ctx context.Context) error {
 				continue
 			}
 		}
-		return finalError(ctx, err)
+		return m.finalError(ctx, err)
 	}
 }
 
@@ -495,9 +523,12 @@ func userError(err error) error {
 
 // finalError is what a row shows when its download gave up. A cancelled
 // download keeps the context error, which is how pausing is told apart.
-func finalError(ctx context.Context, err error) error {
+func (m *Manager) finalError(ctx context.Context, err error) error {
 	if cerr := ctx.Err(); cerr != nil {
 		return cerr
+	}
+	if m.skipsRefusal(err) {
+		return &skipError{err}
 	}
 	return userError(err)
 }
@@ -522,7 +553,7 @@ func waitText(d time.Duration) string {
 // The count starts over whenever a segment comes through. A cookie replaced
 // in the settings ends the wait at once. It reports whether to try again.
 func (m *Manager) waitOut(ctx context.Context, it *Item, waits *int, err error) bool {
-	if ctx.Err() != nil || !engine.Temporary(err) || *waits >= len(engine.BlockedWaits) {
+	if ctx.Err() != nil || !engine.Temporary(err) || m.skipsRefusal(err) || *waits >= len(engine.BlockedWaits) {
 		return false
 	}
 	d := engine.BlockedWaits[*waits]

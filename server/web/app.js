@@ -197,6 +197,7 @@
       case 'downloading': return { label: 'Downloading', cls: 'downloading', detail: it.detail };
       case 'complete': return { label: 'Finished', cls: 'complete' };
       case 'error': return { label: 'Error: ' + (it.error || 'failed'), cls: 'error' };
+      case 'skipped': return { label: 'Skipped - Site Refused', cls: 'skipped' };
       default: return { label: it.status, cls: 'queued' };
     }
   }
@@ -823,18 +824,20 @@
   // askDialog shows the shared question box. With checkLabel it also shows a tick
   // box that starts off; the answer is { ok, checked }. okChecked, when given,
   // is the label of the OK button while the box is ticked.
-  function askDialog(title, text, okLabel, checkLabel, okChecked) {
+  function askDialog(title, text, okLabel, checkLabel, okChecked, silentLabel) {
     return new Promise((resolve) => {
       const dlg = $('#confirmDlg');
       const box = $('#confirmCheck');
       $('#confirmTitle').textContent = title;
       $('#confirmText').textContent = text;
       $('#confirmOk').textContent = okLabel;
+      $('#confirmSilent').hidden = !silentLabel;
+      $('#confirmSilent').textContent = silentLabel || '';
       box.checked = false;
       $('#confirmCheckRow').hidden = !checkLabel;
       $('#confirmCheckText').textContent = checkLabel || '';
       box.onchange = () => { $('#confirmOk').textContent = box.checked && okChecked ? okChecked : okLabel; };
-      dlg.addEventListener('close', () => resolve({ ok: dlg.returnValue === 'ok', checked: !!checkLabel && box.checked }), { once: true });
+      dlg.addEventListener('close', () => resolve({ ok: dlg.returnValue === 'ok', silent: dlg.returnValue === 'silent', checked: !!checkLabel && box.checked }), { once: true });
       dlg.returnValue = 'cancel';
       dlg.showModal();
     });
@@ -971,7 +974,7 @@
     done: $('#setDone'), inc: $('#setIncomplete'), m3u8: $('#setM3U8'),
     dataDir: $('#setDataDir'),
     parallel: $('#setParallel'), res: $('#setRes'),
-    bottomFirst: $('#setBottomFirst'), firstPieces: $('#setFirstPieces'), uniqueServer: $('#setUniqueServer'), serverRetries: $('#setServerRetries'), serverWait: $('#setServerWait'), deepSearch: $('#setDeepSearch'), deepPositions: $('#setDeepPositions'), longLasting: $('#setLongLasting'), autoStart: $('#setAutoStart'), autoResume: $('#setAutoResume'),
+    bottomFirst: $('#setBottomFirst'), firstPieces: $('#setFirstPieces'), uniqueServer: $('#setUniqueServer'), serverRetries: $('#setServerRetries'), serverWait: $('#setServerWait'), deepSearch: $('#setDeepSearch'), deepPositions: $('#setDeepPositions'), longLasting: $('#setLongLasting'), skipRefused: $('#setSkipRefused'), silentReplace: $('#setSilentReplace'), autoStart: $('#setAutoStart'), autoResume: $('#setAutoResume'),
     listenOn: $('#setListenOn'), listenFile: $('#setListenFile'), listenArchive: $('#setListenArchive'), listenBackups: $('#setListenBackups'), listenPat: $('#setListenPatterns'), listenSkip: $('#setListenSkip'), listenPrivate: $('#setListenPrivate'),
   };
 
@@ -1015,6 +1018,9 @@
     F.deepSearch.checked = !!s.deepSearch;
     F.deepPositions.value = s.deepPositions || 2;
     F.longLasting.checked = !!s.longLasting;
+    F.skipRefused.checked = !!s.skipRefused;
+    F.silentReplace.checked = !!s.silentReplace;
+    syncSilentButton();
     syncExperimental();
     F.autoStart.checked = !!s.autoStart;
     F.autoResume.checked = !!s.autoResume;
@@ -1040,7 +1046,7 @@
       dataDir: F.dataDir.value,
       categories: readCategoryEditor(),
       maxParallel: parseInt(F.parallel.value, 10) || 0, maxResolution: parseInt(F.res.value, 10) || 0,
-      addBottomFirst: F.bottomFirst.checked, firstPieces: F.firstPieces.checked, uniqueServer: F.uniqueServer.checked, serverRetries: parseInt(F.serverRetries.value, 10) || 10, serverWait: parseFloat(F.serverWait.value) || 1, deepSearch: F.deepSearch.checked && F.uniqueServer.checked, deepPositions: parseInt(F.deepPositions.value, 10) || 2, longLasting: F.longLasting.checked, autoStart: F.autoStart.checked, autoResume: F.autoResume.checked,
+      addBottomFirst: F.bottomFirst.checked, firstPieces: F.firstPieces.checked, uniqueServer: F.uniqueServer.checked, serverRetries: parseInt(F.serverRetries.value, 10) || 10, serverWait: parseFloat(F.serverWait.value) || 1, deepSearch: F.deepSearch.checked && F.uniqueServer.checked, deepPositions: parseInt(F.deepPositions.value, 10) || 2, longLasting: F.longLasting.checked, skipRefused: F.skipRefused.checked, silentReplace: F.silentReplace.checked, autoStart: F.autoStart.checked, autoResume: F.autoResume.checked,
       listen: { enabled: F.listenOn.checked, file: F.listenFile.value, noArchive: !F.listenArchive.checked, noBackups: !backupsWanted, patterns: F.listenPat.value.split('\n'), skipDuplicates: F.listenSkip.checked, allowPrivate: F.listenPrivate.checked },
       theme, mode: state.settings ? state.settings.mode : 'hybrid',
     };
@@ -1152,8 +1158,16 @@
     const next = readSettings();
     const had = state.settings ? (state.settings.cookie || '').trim() : '';
     const changed = had !== '' && next.cookie.trim() !== had; // the first cookie replaces nothing
-    if (changed && asked !== true && !(await confirmDialog('Replace the cookie?', cookieQuestion(next.cookie.trim().length), 'Replace cookie'))) return;
-    const paused = changed ? runningCount() : 0;
+    let silent = false;
+    if (changed && asked !== true) {
+      const choice = await cookieDialog(next.cookie.trim().length);
+      if (!choice) return;
+      silent = choice === 'silent';
+      if (silent) {
+        try { await api('cookie', { cookie: next.cookie.trim(), silent: true }); } catch (err) { toast(err.message, 'error'); return; }
+      }
+    }
+    const paused = changed && !silent ? runningCount() : 0;
     try {
       state.settings = await api('settings', next, 'PUT');
       fillSettings(state.settings);
@@ -1234,6 +1248,27 @@
   function cookieQuestion(len) {
     return 'The saved cookie will be replaced with the text you last copied (' + len + ' characters). Downloads that are running or waiting will be paused. They will stay paused until they are started manually.';
   }
+  // Silent Replace is offered only while the Experimental tick box is on (as saved).
+  async function silentOn() {
+    if (!state.settings) { try { state.settings = await api('settings'); } catch (_) { return false; } }
+    return !!state.settings.silentReplace;
+  }
+  // Asks before a cookie is replaced; answers 'replace', 'silent' or '' (cancelled).
+  async function cookieDialog(len) {
+    const r = await askDialog('Replace the cookie?', cookieQuestion(len), 'Replace cookie', null, null, (await silentOn()) ? 'Silent Replace' : '');
+    return r.silent ? 'silent' : r.ok ? 'replace' : '';
+  }
+  // Replaces the cookie without pausing anything; the Settings page, if open, shows the new one.
+  async function silentReplace(cookie) {
+    try {
+      await api('cookie', { cookie, silent: true });
+      state.settings = await api('settings');
+      F.cookie.value = state.settings.cookie || '';
+      cookieToast(0, cookie.length);
+      refresh();
+    } catch (err) { toast(err.message, 'error', 7000); }
+  }
+  function syncSilentButton() { $('#silentCookie').hidden = !F.silentReplace.checked; }
   function cookieToast(paused, len) {
     toast(paused ? 'Downloads Paused to Replace Cookies' : 'Cookie replaced (' + len + ' characters).', 'ok');
   }
@@ -1249,9 +1284,10 @@
       return;
     }
     const cookie = text.replace(/\s*[\r\n]+\s*/g, ' ');
-    if (!(await confirmDialog('Replace the cookie?', cookieQuestion(cookie.length), 'Replace cookie'))) return;
+    const choice = await cookieDialog(cookie.length);
+    if (!choice) return;
     try {
-      const res = await api('cookie', { cookie });
+      const res = await api('cookie', { cookie, silent: choice === 'silent' });
       state.settings = null; // re-read the next time settings open
       cookieToast(res.paused || 0, cookie.length);
       refresh();
@@ -1266,11 +1302,24 @@
       return;
     }
     const cookie = text.replace(/\s*[\r\n]+\s*/g, ' ');
-    if (!(await confirmDialog('Replace the cookie?', cookieQuestion(cookie.length), 'Replace cookie'))) return;
+    const choice = await cookieDialog(cookie.length);
+    if (!choice) return;
+    if (choice === 'silent') { silentReplace(cookie); return; }
     F.cookie.value = cookie;
     setDirty(true);
     saveSettings(true);
   });
+  // Silent Replace in Settings: take what is on the clipboard and replace the cookie, no questions, nothing paused.
+  $('#silentCookie').addEventListener('click', async () => {
+    const { text, why } = await clipboardText();
+    if (!text) {
+      F.cookie.focus();
+      toast('Nothing to replace the cookie with. ' + (why ? why + ' ' : 'The clipboard has no text. ') + 'Copy the cookie and press Silent Replace again, or press Ctrl+V in the box.', 'warn', 8000);
+      return;
+    }
+    silentReplace(text.replace(/\s*[\r\n]+\s*/g, ' '));
+  });
+  F.silentReplace.addEventListener('change', syncSilentButton);
   $$('[data-browse]').forEach((b) => b.addEventListener('click', async () => {
     const field = $('#' + b.dataset.browse);
     b.disabled = true;

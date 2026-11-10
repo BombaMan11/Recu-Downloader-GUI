@@ -137,7 +137,7 @@
         <div class="field">
           <label for="setCookie">Cookie</label>
           <textarea id="setCookie" rows="4" class="masked" autocomplete="off" spellcheck="false"></textarea>
-          <div class="row"><button class="btn" id="revealCookie" type="button">Show cookie</button> <button class="btn" id="replaceCookie" type="button" title="Empties the box and pastes whatever you last copied">Replace cookie</button></div>
+          <div class="row"><button class="btn" id="revealCookie" type="button">Show cookie</button> <button class="btn" id="silentCookie" type="button" hidden title="Empties the box and pastes whatever you last copied, without pausing the list">Silent Replace</button> <button class="btn" id="replaceCookie" type="button" title="Empties the box and pastes whatever you last copied">Replace cookie</button></div>
           <div class="help">Copy both values from your browser: open the site while signed in, press F12, choose Network, select a request to the site and look under Request headers. They are saved on this computer and kept after you close the program.</div>
         </div>
       </div>
@@ -270,6 +270,12 @@
           <label class="check"><input type="checkbox" id="setLongLasting"><span>Long Lasting Site</span></label>
           <div class="help">Reads the URLs at the start instead of reading the URLs when it's time to download</div>
         </div>
+        <div class="field">
+          <label class="check"><input type="checkbox" id="setSkipRefused"><span>Skip Site Refused</span></label>
+        </div>
+        <div class="field">
+          <label class="check"><input type="checkbox" id="setSilentReplace"><span>Don't Pause on Cookie Change Option (Silent Replace)</span></label>
+        </div>
       </div>
       </div>
 
@@ -303,6 +309,7 @@
     <label class="check" id="confirmCheckRow" hidden><input type="checkbox" id="confirmCheck"><span id="confirmCheckText"></span></label>
     <div class="dialog-actions">
       <button class="btn" value="cancel">Cancel</button>
+      <button class="btn danger" value="silent" id="confirmSilent" hidden>Silent Replace</button>
       <button class="btn danger" value="ok" id="confirmOk">Delete</button>
     </div>
   </form>

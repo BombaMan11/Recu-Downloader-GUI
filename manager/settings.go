@@ -55,7 +55,9 @@ type Settings struct {
 	ServerWait    float64 `json:"serverWait"`     // seconds between those tries
 	DeepSearch    bool    `json:"deepSearch"`     // also avoid the servers of the rows further up (needs UniqueServer)
 	DeepPositions int     `json:"deepPositions"`  // how many rows above Deep Search compares
-	LongLasting   bool    `json:"longLasting"`    // rows are read when started, not when their turn comes; no tick box, only the settings file changes it
+	LongLasting   bool    `json:"longLasting"`    // experimental: rows are read when started, not when their turn comes
+	SkipRefused   bool    `json:"skipRefused"`    // experimental: a row the site refuses is skipped at once, not retried later
+	SilentReplace bool    `json:"silentReplace"`  // offers Silent Replace: a new cookie without pausing the list
 	BottomFirst   bool    `json:"addBottomFirst"` // links added together go in bottom to top: the bottom link becomes the first row of the batch
 
 	DataDir string `json:"dataDir,omitempty"`

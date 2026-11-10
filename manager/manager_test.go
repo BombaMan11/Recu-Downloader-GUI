@@ -1443,3 +1443,33 @@ func TestLongLastingSiteIsOnUnlessTheFileSaysOtherwise(t *testing.T) {
 		m.Shutdown()
 	}
 }
+
+// A row the site refused during the server check waits before asking again.
+// Pausing it and pressing Start is the person saying "try now": it must go back
+// to plain waiting and ask at once, not sit out the rest of the wait.
+func TestStartAfterASiteRefusalAsksAgainAtOnce(t *testing.T) {
+	e := newTestEnv(t, "hybrid", nil)
+	e.site.BlockPages(1000)
+	id := e.addVideos(1)[0]
+	e.waitFor("the refusal to show", func() bool { return e.item(id).Detail == "Site refused, will try again" })
+	e.m.Pause([]int64{id})
+	e.site.BlockPages(0) // the person signed in again
+	e.m.Start([]int64{id})
+	if d := e.item(id).Detail; d != "" {
+		t.Errorf("after Start the row shows %q, want plain waiting", d)
+	}
+	e.waitComplete(id)
+}
+
+// Since its update the site answers the API with JSON: the HTML sits in the
+// "player" field, with the quotes and slashes escaped. A download must still
+// find the playlist link.
+func TestDownloadsWhenTheApiAnswersWithJSON(t *testing.T) {
+	e := newTestEnv(t, "series", nil)
+	e.site.SetJSONAPI(true)
+	id := e.addVideos(2)[0]
+	e.waitComplete(id)
+	if want := e.site.Expected(2, "720p", 0, 20); !bytes.Equal(e.readDone(2), want) {
+		t.Fatal("content differs")
+	}
+}

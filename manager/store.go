@@ -236,7 +236,7 @@ func (m *Manager) loadQueue() error {
 			it.SectionRef = nil
 		}
 		switch it.Status {
-		case StatusComplete, StatusError, StatusPaused:
+		case StatusComplete, StatusError, StatusPaused, StatusSkipped:
 		default:
 			// was running or waiting when the program closed
 			if m.settings.AutoResume {

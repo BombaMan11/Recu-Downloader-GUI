@@ -313,14 +313,21 @@ func (m *Manager) SetSettings(s Settings) error {
 
 // setSettings is SetSettings; it also reports how many downloads were paused
 // because the cookie changed. They are not started again: the user does that.
-func (m *Manager) setSettings(s Settings) (int, error) {
+func (m *Manager) setSettings(s Settings) (int, error) { return m.applySettings(s, true) }
+
+// applySettings is setSettings; pause false keeps the list running when the
+// cookie changes (Silent Replace).
+func (m *Manager) applySettings(s Settings, pause bool) (int, error) {
 	s.normalize()
 	if err := s.Listen.validate(); err != nil {
 		return 0, err
 	}
 	// A new cookie is never swapped in under downloads that are running: they are
 	// paused first, like Pause all. The user starts them again.
-	paused := m.pauseForNewCookie(s.Cookie)
+	paused := 0
+	if pause {
+		paused = m.pauseForNewCookie(s.Cookie)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s.Mode = m.settings.Mode
@@ -359,16 +366,35 @@ const maxCookie = 64 << 10
 // of them carries on with the old cookie. They stay paused until the user
 // starts them. It returns how many were paused.
 func (m *Manager) SetCookie(cookie string) (int, error) {
+	s, err := m.withCookie(cookie)
+	if err != nil {
+		return 0, err
+	}
+	return m.setSettings(s)
+}
+
+// SetCookieSilently replaces the saved cookie like SetCookie, but nothing is
+// paused: the list carries on and the new cookie is used from the next request.
+func (m *Manager) SetCookieSilently(cookie string) error {
+	s, err := m.withCookie(cookie)
+	if err != nil {
+		return err
+	}
+	_, err = m.applySettings(s, false)
+	return err
+}
+
+func (m *Manager) withCookie(cookie string) (Settings, error) {
 	cookie = strings.TrimSpace(headerCleaner.Replace(cookie))
 	if cookie == "" {
-		return 0, errors.New("the cookie is empty")
+		return Settings{}, errors.New("the cookie is empty")
 	}
 	if len(cookie) > maxCookie {
-		return 0, errors.New("that is too long to be a cookie")
+		return Settings{}, errors.New("that is too long to be a cookie")
 	}
 	s := m.Settings()
 	s.Cookie = cookie
-	return m.setSettings(s)
+	return s, nil
 }
 
 // cookieStopWait is the longest a cookie change waits for paused downloads to wind down.
@@ -607,8 +633,9 @@ func (m *Manager) Start(ids []int64) {
 	defer m.mu.Unlock()
 	for _, it := range m.selectedLocked(ids) {
 		m.forgetServerLocked(it) // starting a row looks its server up again
+		it.preWait, it.preBlocks = time.Time{}, 0
 		stopLookupLocked(it)
-		if it.Status == StatusPaused || it.Status == StatusError {
+		if it.Status == StatusPaused || it.Status == StatusError || it.Status == StatusSkipped {
 			it.Status = StatusQueued
 			it.Error = ""
 		}
@@ -668,8 +695,9 @@ func (m *Manager) ForceStart(ids []int64) (skippedInactive int) {
 		}
 		it.Forced = true
 		m.forgetServerLocked(it)
+		it.preWait, it.preBlocks = time.Time{}, 0
 		stopLookupLocked(it)
-		if it.Status == StatusPaused || it.Status == StatusError {
+		if it.Status == StatusPaused || it.Status == StatusError || it.Status == StatusSkipped {
 			it.Status = StatusQueued
 			it.Error = ""
 		}

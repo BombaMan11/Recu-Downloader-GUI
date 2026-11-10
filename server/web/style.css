@@ -230,6 +230,7 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .s-complete .stt { color: var(--ok); }
 .s-error .stt { color: var(--err); }
 .s-paused .stt, .s-inactive .stt { color: var(--pause); }
+.s-skipped .stt { color: var(--warn); }
 .s-queued .stt { color: var(--muted); }
 .pill {
   display: inline-block; margin-left: 7px; padding: 0 7px; border-radius: 9px; font-size: 11.5px; font-weight: 600;

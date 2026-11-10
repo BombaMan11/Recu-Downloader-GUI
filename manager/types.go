@@ -35,6 +35,7 @@ const (
 	StatusDownloading Status = "downloading" // writing segments
 	StatusComplete    Status = "complete"
 	StatusError       Status = "error"
+	StatusSkipped     Status = "skipped" // the site refused it and Skip Site Refused is on; Start tries again
 )
 
 // Item is one row of the table. All fields are guarded by Manager.mu.

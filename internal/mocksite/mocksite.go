@@ -5,6 +5,7 @@ package mocksite
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -38,6 +39,7 @@ type Site struct {
 	minValid  int
 	failOnce  map[int]bool
 	subscribe bool
+	jsonAPI   bool
 	problems  []string
 	resolves  int
 	shift     int // moves every video to the other server when odd
@@ -184,6 +186,14 @@ func (s *Site) SetSubscribe(v bool) {
 	s.mu.Unlock()
 }
 
+// SetJSONAPI makes the API answer the way the site does since its update: a JSON
+// object whose "player" holds the HTML, with the quotes and slashes escaped.
+func (s *Site) SetJSONAPI(v bool) {
+	s.mu.Lock()
+	s.jsonAPI = v
+	s.mu.Unlock()
+}
+
 func (s *Site) problem(format string, a ...any) {
 	s.mu.Lock()
 	s.problems = append(s.problems, fmt.Sprintf(format, a...))
@@ -284,8 +294,20 @@ func (s *Site) mainHandler(w http.ResponseWriter, r *http.Request) {
 		s.rid++
 		s.resolves++
 		s.mu.Unlock()
-		fmt.Fprintf(w, `<video><source src="%s/hls/user%s/2024-01-02,10-30-45/playlist.m3u8?x=1&amp;y=2" type="application/x-mpegURL"></video>`,
+		html := fmt.Sprintf(`<video><source src="%s/hls/user%s/2024-01-02,10-30-45/playlist.m3u8?x=1&amp;y=2" type="application/x-mpegURL"></video>`,
 			s.cdns[s.cdnIndex(n)].URL, id)
+		s.mu.Lock()
+		asJSON := s.jsonAPI
+		s.mu.Unlock()
+		if asJSON {
+			var buf bytes.Buffer
+			enc := json.NewEncoder(&buf)
+			enc.SetEscapeHTML(false)
+			enc.Encode(map[string]any{"status": true, "reason": nil, "player": html, "modal": nil, "redirect_url": nil})
+			fmt.Fprint(w, strings.ReplaceAll(buf.String(), "/", `\/`)) // as PHP writes it
+			return
+		}
+		fmt.Fprint(w, html)
 	default:
 		http.NotFound(w, r)
 	}

@@ -298,3 +298,87 @@ func TestReplacingTheCookieWithNothingRunningPausesNothing(t *testing.T) {
 		t.Error("a refused cookie changed the saved one")
 	}
 }
+
+// Silent Replace swaps the cookie and leaves the list alone: nothing is paused
+// and the rows finish.
+func TestSilentCookieReplaceDoesNotPauseTheList(t *testing.T) {
+	e := newTestEnv(t, "hybrid", func(s *mocksite.Site) { s.Lines = 62; s.Delay = 15 * time.Millisecond })
+	ids := e.addVideos(2, 3, 4)
+	e.waitFor("two downloading", func() bool {
+		return e.item(ids[0]).Status == "downloading" && e.item(ids[1]).Status == "downloading"
+	})
+
+	e.site.AlsoAccept("session=fresh")
+	if err := e.m.SetCookieSilently("session=fresh"); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.m.Settings().Cookie; got != "session=fresh" {
+		t.Fatalf("cookie %q", got)
+	}
+	for _, id := range ids {
+		if st := e.item(id).Status; st == "paused" {
+			t.Errorf("row %d was paused by a silent replace", id)
+		}
+	}
+	e.waitComplete(ids...)
+	if err := e.m.SetCookieSilently("   "); err == nil {
+		t.Error("an empty cookie was accepted")
+	}
+}
+
+func skipRefused(e *testEnv) {
+	e.m.mu.Lock()
+	e.m.settings.SkipRefused = true
+	e.m.mu.Unlock()
+}
+
+// With Skip Site Refused on, a refusal is not waited out: the row is marked
+// skipped at once, wherever the refusal comes, and Start tries it again.
+func TestSkipSiteRefusedInTheServerCheck(t *testing.T) {
+	old := engine.BlockedWaits
+	engine.BlockedWaits = []time.Duration{time.Hour}
+	t.Cleanup(func() { engine.BlockedWaits = old })
+	e := newTestEnv(t, "hybrid", nil)
+	skipRefused(e)
+	e.site.BlockPages(1000)
+	id := e.addVideos(2)[0]
+	e.waitFor("the row to be skipped", func() bool { return e.item(id).Status == "skipped" })
+	e.site.BlockPages(0)
+	e.m.Start([]int64{id})
+	e.waitComplete(id)
+}
+
+func TestSkipSiteRefusedWhenTheRowStarts(t *testing.T) {
+	old := engine.BlockedWaits
+	engine.BlockedWaits = []time.Duration{time.Hour}
+	t.Cleanup(func() { engine.BlockedWaits = old })
+	e := newTestEnv(t, "series", nil)
+	skipRefused(e)
+	e.site.BlockPages(1000)
+	id := e.addVideos(2)[0]
+	e.waitFor("the row to be skipped", func() bool { return e.item(id).Status == "skipped" })
+	e.site.BlockPages(0)
+	e.m.Start([]int64{id})
+	e.waitComplete(id)
+}
+
+func TestSkipSiteRefusedWhileDownloading(t *testing.T) {
+	old := engine.BlockedWaits
+	engine.BlockedWaits = []time.Duration{time.Hour}
+	t.Cleanup(func() { engine.BlockedWaits = old })
+	e := newTestEnv(t, "series", slowSite)
+	skipRefused(e)
+	id := e.addVideos(2)[0]
+	e.waitFor("some progress", func() bool { return e.item(id).Percent > 20 })
+	e.site.BlockSegments(true)
+	e.waitFor("the row to be skipped", func() bool { return e.item(id).Status == "skipped" })
+	if e.item(id).Percent == 0 {
+		t.Error("the position was lost")
+	}
+	e.site.BlockSegments(false)
+	e.m.Start([]int64{id})
+	e.waitComplete(id)
+	if want := e.site.Expected(2, "720p", 0, 60); !bytes.Equal(e.readDone(2), want) {
+		t.Fatal("content differs after starting again")
+	}
+}

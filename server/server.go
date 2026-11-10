@@ -486,8 +486,17 @@ func (s *Server) handleClipboard(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCookie(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Cookie string `json:"cookie"`
+		Silent bool   `json:"silent"`
 	}
 	if !readJSON(w, r, &req) {
+		return
+	}
+	if req.Silent {
+		if err := s.opts.Manager.SetCookieSilently(req.Cookie); err != nil {
+			fail(w, http.StatusBadRequest, "Replace cookie: "+err.Error())
+			return
+		}
+		writeJSON(w, map[string]int{"length": len(strings.TrimSpace(req.Cookie)), "paused": 0})
 		return
 	}
 	paused, err := s.opts.Manager.SetCookie(req.Cookie)

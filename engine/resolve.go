@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -161,8 +162,20 @@ func Resolve(env *Env, videoURL string) (*Resolved, error) {
 		return nil, env.netErr(KindOther, err)
 	}
 	api := string(apidata)
+	key := strings.TrimSpace(api)
+	// since the site's update the answer is JSON, with the HTML in "player"
+	var reply struct {
+		Reason *string `json:"reason"`
+		Player string  `json:"player"`
+	}
+	if json.Unmarshal(apidata, &reply) == nil {
+		api = reply.Player
+		if reply.Reason != nil {
+			key = *reply.Reason
+		}
+	}
 	// continue based on response from api
-	switch strings.TrimSpace(api) {
+	switch key {
 	case "shall_subscribe":
 		return nil, &ResolveError{Kind: KindWait}
 	case "shall_signin":
