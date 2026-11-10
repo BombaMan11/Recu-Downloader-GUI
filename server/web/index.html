@@ -145,6 +145,11 @@
       <div class="group">
         <h2>Normal folders</h2>
         <div class="field">
+          <label for="setFolderRedirect">Folder Button Redirect</label>
+          <select class="sel" id="setFolderRedirect"></select>
+          <div class="help">Opens the Folder for the Selected Category when Pressing the Folder Icon in the Main Menu</div>
+        </div>
+        <div class="field">
           <label for="setDone">Finished videos</label>
           <div class="row"><input type="text" id="setDone" spellcheck="false" autocomplete="off" placeholder="Default: next to Recu.exe"><button class="btn" type="button" data-browse="setDone">Browse…</button><button class="btn" type="button" data-open="done">Open</button></div>
         </div>
@@ -272,6 +277,17 @@
         </div>
         <div class="field">
           <label class="check"><input type="checkbox" id="setSkipRefused"><span>Skip Site Refused</span></label>
+        </div>
+        <div class="field">
+          <label for="setFFmpegDir">FFmpeg Location</label>
+          <div class="row"><input type="text" id="setFFmpegDir" spellcheck="false" autocomplete="off" placeholder="Default: ffmpeg in PATH"><button class="btn" type="button" data-browse="setFFmpegDir">Browse…</button></div>
+          <div class="help">The folder that ffmpeg.exe and ffprobe.exe are in.</div>
+        </div>
+        <div class="field">
+          <label class="check"><input type="checkbox" id="setConvertMp4"><span>Convert to MP4</span></label>
+        </div>
+        <div class="field">
+          <label class="check"><input type="checkbox" id="setDeleteAfterConvert"><span>Delete After Conversion</span></label>
         </div>
         <div class="field">
           <label class="check"><input type="checkbox" id="setSilentReplace"><span>Don't Pause on Cookie Change Option (Silent Replace)</span></label>

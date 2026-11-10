@@ -286,3 +286,29 @@ func TestColumnWidthsAreKeptAndCleaned(t *testing.T) {
 		t.Fatal("incomplete layout should reset to default")
 	}
 }
+
+// The Folder Button Redirect picks which Finished folder the main menu's folder
+// button opens: the normal one for No Category (the default) or a category's.
+func TestFolderRedirect(t *testing.T) {
+	e := newTestEnv(t, "series", nil)
+	normal, _ := e.m.Dir("done")
+	other := filepath.Join(e.dir, "movies-done")
+	e.setSettings(func(s *Settings) {
+		s.Categories = []Category{{Name: "Movies", DoneDir: other}, {Name: "Plain"}}
+	})
+	movies, plain := catIDByName(t, e.m, "Movies"), catIDByName(t, e.m, "Plain")
+	for _, c := range []struct{ redirect, want, why string }{
+		{"", normal, "No Category"},
+		{movies, other, "a category with its own folder"},
+		{plain, normal, "a category that leaves the folder blank"},
+		{"gone", normal, "a category that no longer exists"},
+	} {
+		e.setSettings(func(s *Settings) { s.FolderRedirect = c.redirect })
+		if got, err := e.m.RedirectDir(); err != nil || got != c.want {
+			t.Errorf("%s: %q, %v; want %q", c.why, got, err, c.want)
+		}
+	}
+	if DefaultSettings().FolderRedirect != "" {
+		t.Error("the default is not No Category")
+	}
+}

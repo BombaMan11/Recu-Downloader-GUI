@@ -38,6 +38,8 @@ type Manager struct {
 	dirty      bool
 	resolveSem chan struct{}
 	shutdown   bool
+	convertQ   []*Item       // finished videos waiting to be converted to mp4
+	convertCh  chan struct{} // wakes convertLoop
 
 	clip        Clipboard // what the link listener watches
 	listenEvery time.Duration
@@ -59,6 +61,7 @@ func New(baseDir, tag string) (*Manager, error) {
 		tag:         tag,
 		kickCh:      make(chan struct{}, 1),
 		resolveSem:  make(chan struct{}, 2),
+		convertCh:   make(chan struct{}, 1),
 		version:     1,
 		listenEvery: listenEvery,
 	}
@@ -86,7 +89,8 @@ func New(baseDir, tag string) (*Manager, error) {
 
 // Run launches the scheduler and the background saver.
 func (m *Manager) Run() {
-	m.wg.Add(3)
+	m.wg.Add(4)
+	go m.convertLoop()
 	go m.schedulerLoop()
 	go m.saverLoop()
 	go m.listenLoop()
@@ -235,6 +239,15 @@ func (m *Manager) DirFor(id int64, which string) (string, error) {
 		return m.ownDirLocked(dir)
 	}
 	return "", fmt.Errorf("That row is not in the list any more.")
+}
+
+// RedirectDir is the Finished folder the main menu's folder button opens: the
+// selected category's (Folder Button Redirect), or the normal one.
+func (m *Manager) RedirectDir() (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	dir := m.folderLocked(&Item{Category: m.settings.FolderRedirect}, func(c *Category) string { return c.DoneDir }, m.settings.doneName())
+	return m.ownDirLocked(dir)
 }
 
 func (m *Manager) ownDirLocked(dir string) (string, error) {

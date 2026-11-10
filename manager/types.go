@@ -76,6 +76,7 @@ type Item struct {
 	speed        float32
 	etaMin       float32
 	stage        string
+	convertNote  string // "Waiting to convert to MP4" / "Converting to MP4" on a finished row
 	note         string
 	priming      bool    // running to download its first pieces only
 	fresh        bool    // its server was learned in this session (not just remembered from an earlier one)

@@ -159,6 +159,11 @@ $owner.Close()
 	return strings.TrimSpace(string(out)), nil
 }
 
+// HideWindow keeps a program started from the app from opening a console window.
+func HideWindow(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+}
+
 var (
 	kernel32               = syscall.NewLazyDLL("kernel32.dll")
 	procOpenClipboard      = user32.NewProc("OpenClipboard")

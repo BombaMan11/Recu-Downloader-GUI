@@ -195,7 +195,7 @@
         return { label: 'Waiting', cls: 'queued', pill: /^(Next|#\d+)$/.test(it.hint) ? it.hint : '' };
       case 'resolving': return { label: it.detail || 'Getting playlist', cls: 'working' };
       case 'downloading': return { label: 'Downloading', cls: 'downloading', detail: it.detail };
-      case 'complete': return { label: 'Finished', cls: 'complete' };
+      case 'complete': return it.detail ? { label: it.detail, cls: 'working' } : { label: 'Finished', cls: 'complete' };
       case 'error': return { label: 'Error: ' + (it.error || 'failed'), cls: 'error' };
       case 'skipped': return { label: 'Skipped - Site Refused', cls: 'skipped' };
       default: return { label: it.status, cls: 'queued' };
@@ -346,6 +346,13 @@
     paintSelection();
     if (state.snap) renderTable();
   }
+  async function setForce(value) {
+    try {
+      const current = await api('settings');
+      state.settings = await api('settings', Object.assign({}, current, { forceNameSort: value }), 'PUT');
+      refresh();
+    } catch (err) { toast(err.message, 'error'); }
+  }
   function initSortHeads() {
     $$('#grid thead th').forEach((th) => {
       const key = th.dataset.col;
@@ -369,6 +376,12 @@
         const on = (d) => !!state.sort && state.sort.key === key && state.sort.dir === d;
         list.push({ label: 'Sort by ' + label + (s.text ? ' (A to Z)' : (first === -1 ? ' (largest first)' : '')), fn: () => setSort(key, first), on: on(first) });
         list.push({ label: 'Sort by ' + label + (s.text ? ' (Z to A)' : ' (smallest first)'), fn: () => setSort(key, -first), on: on(-first) });
+      }
+      if (key === 'name') {
+        // unlike the view sorts above, this one keeps the queue itself in name order
+        const f = state.snap && state.snap.forceNameSort;
+        list.push({ label: 'Force ' + label + ' Sort A to Z', fn: () => setForce(f === 'az' ? '' : 'az'), on: f === 'az' });
+        list.push({ label: 'Force ' + label + ' Sort Z to A', fn: () => setForce(f === 'za' ? '' : 'za'), on: f === 'za' });
       }
       if (state.sort) list.push({ label: 'Back to the queue order', fn: () => setSort(null) });
       else if (!s) list.push({ label: 'Queue order (no sort)', fn: () => setSort(null), on: true });
@@ -583,9 +596,9 @@
   });
 
   $('#recoveryBtn').addEventListener('click', () => act('dismissrecovery', []));
-  $('#openDone').addEventListener('click', () => openFolder('done'));
-  async function openFolder(which, id) {
-    try { await api('open', id === undefined ? { which } : { which, id }); } catch (err) { toast(err.message, 'error'); }
+  $('#openDone').addEventListener('click', () => openFolder('done', undefined, true));
+  async function openFolder(which, id, redirect) {
+    try { await api('open', id !== undefined ? { which, id } : redirect ? { which, redirect } : { which }); } catch (err) { toast(err.message, 'error'); }
   }
 
   $$('#modeSeg button').forEach((btn) => {
@@ -974,7 +987,7 @@
     done: $('#setDone'), inc: $('#setIncomplete'), m3u8: $('#setM3U8'),
     dataDir: $('#setDataDir'),
     parallel: $('#setParallel'), res: $('#setRes'),
-    bottomFirst: $('#setBottomFirst'), firstPieces: $('#setFirstPieces'), uniqueServer: $('#setUniqueServer'), serverRetries: $('#setServerRetries'), serverWait: $('#setServerWait'), deepSearch: $('#setDeepSearch'), deepPositions: $('#setDeepPositions'), longLasting: $('#setLongLasting'), skipRefused: $('#setSkipRefused'), silentReplace: $('#setSilentReplace'), autoStart: $('#setAutoStart'), autoResume: $('#setAutoResume'),
+    bottomFirst: $('#setBottomFirst'), firstPieces: $('#setFirstPieces'), uniqueServer: $('#setUniqueServer'), serverRetries: $('#setServerRetries'), serverWait: $('#setServerWait'), deepSearch: $('#setDeepSearch'), deepPositions: $('#setDeepPositions'), longLasting: $('#setLongLasting'), skipRefused: $('#setSkipRefused'), silentReplace: $('#setSilentReplace'), convertMp4: $('#setConvertMp4'), ffmpegDir: $('#setFFmpegDir'), folderRedirect: $('#setFolderRedirect'), deleteAfterConvert: $('#setDeleteAfterConvert'), autoStart: $('#setAutoStart'), autoResume: $('#setAutoResume'),
     listenOn: $('#setListenOn'), listenFile: $('#setListenFile'), listenArchive: $('#setListenArchive'), listenBackups: $('#setListenBackups'), listenPat: $('#setListenPatterns'), listenSkip: $('#setListenSkip'), listenPrivate: $('#setListenPrivate'),
   };
 
@@ -996,7 +1009,10 @@
     if (!F.uniqueServer.checked) F.deepSearch.checked = false;
     F.deepSearch.disabled = !F.uniqueServer.checked;
     F.deepPositions.disabled = !F.deepSearch.checked;
+    if (!F.convertMp4.checked) F.deleteAfterConvert.checked = false;
+    F.deleteAfterConvert.disabled = !F.convertMp4.checked;
   }
+  F.convertMp4.addEventListener('change', syncExperimental);
   F.uniqueServer.addEventListener('change', syncExperimental);
   F.deepSearch.addEventListener('change', syncExperimental);
 
@@ -1020,6 +1036,11 @@
     F.longLasting.checked = !!s.longLasting;
     F.skipRefused.checked = !!s.skipRefused;
     F.silentReplace.checked = !!s.silentReplace;
+    F.convertMp4.checked = !!s.convertMp4;
+    F.ffmpegDir.value = s.ffmpegDir || '';
+    F.folderRedirect.replaceChildren(new Option('No Category', ''), ...(s.categories || []).map((c) => new Option(c.name, c.id)));
+    F.folderRedirect.value = s.folderRedirect || '';
+    F.deleteAfterConvert.checked = !!s.deleteAfterConvert;
     syncSilentButton();
     syncExperimental();
     F.autoStart.checked = !!s.autoStart;
@@ -1046,7 +1067,7 @@
       dataDir: F.dataDir.value,
       categories: readCategoryEditor(),
       maxParallel: parseInt(F.parallel.value, 10) || 0, maxResolution: parseInt(F.res.value, 10) || 0,
-      addBottomFirst: F.bottomFirst.checked, firstPieces: F.firstPieces.checked, uniqueServer: F.uniqueServer.checked, serverRetries: parseInt(F.serverRetries.value, 10) || 10, serverWait: parseFloat(F.serverWait.value) || 1, deepSearch: F.deepSearch.checked && F.uniqueServer.checked, deepPositions: parseInt(F.deepPositions.value, 10) || 2, longLasting: F.longLasting.checked, skipRefused: F.skipRefused.checked, silentReplace: F.silentReplace.checked, autoStart: F.autoStart.checked, autoResume: F.autoResume.checked,
+      addBottomFirst: F.bottomFirst.checked, firstPieces: F.firstPieces.checked, uniqueServer: F.uniqueServer.checked, serverRetries: parseInt(F.serverRetries.value, 10) || 10, serverWait: parseFloat(F.serverWait.value) || 1, deepSearch: F.deepSearch.checked && F.uniqueServer.checked, deepPositions: parseInt(F.deepPositions.value, 10) || 2, longLasting: F.longLasting.checked, skipRefused: F.skipRefused.checked, forceNameSort: state.settings ? state.settings.forceNameSort || '' : '', silentReplace: F.silentReplace.checked, convertMp4: F.convertMp4.checked, ffmpegDir: F.ffmpegDir.value.trim(), folderRedirect: F.folderRedirect.value, deleteAfterConvert: F.deleteAfterConvert.checked, autoStart: F.autoStart.checked, autoResume: F.autoResume.checked,
       listen: { enabled: F.listenOn.checked, file: F.listenFile.value, noArchive: !F.listenArchive.checked, noBackups: !backupsWanted, patterns: F.listenPat.value.split('\n'), skipDuplicates: F.listenSkip.checked, allowPrivate: F.listenPrivate.checked },
       theme, mode: state.settings ? state.settings.mode : 'hybrid',
     };

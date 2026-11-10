@@ -91,6 +91,7 @@ func (m *Manager) releaseResolve() { <-m.resolveSem }
 // scheduleLocked starts whatever the current mode allows, top to bottom.
 // Force-started rows ignore the mode and are not counted against its limits.
 func (m *Manager) scheduleLocked() {
+	m.sortQueueLocked()
 	if m.shutdown || !m.settings.credsOK() {
 		return
 	}
@@ -173,13 +174,14 @@ func (m *Manager) scheduleLocked() {
 		}
 	}
 	// Long Lasting Site: read the rows that have to wait, now, while the site
-	// still lets us in, instead of when their turn comes
-	if m.settings.LongLasting {
+	// still lets us in, instead of when their turn comes. Force Name Sort also
+	// reads them, to learn their names.
+	if m.settings.LongLasting || m.settings.ForceNameSort != "" {
 		for _, it := range m.items {
 			if pre >= m.lookupLimit() {
 				break
 			}
-			if waiting(it) && it.res == nil && !time.Now().Before(it.preWait) {
+			if waiting(it) && it.res == nil && (m.settings.LongLasting || !named(it)) && !time.Now().Before(it.preWait) {
 				m.preResolveLocked(it)
 				pre++
 			}
@@ -330,6 +332,7 @@ func (m *Manager) run(it *Item, ctx context.Context) {
 		it.Error = ""
 		it.Forced = false
 		m.notifyLocked("info", "Completed: "+displayName(it))
+		m.queueConvertLocked(it)
 	case isCancel(err):
 		// whoever cancelled already set the status (paused / inactive);
 		// on shutdown the row goes back to waiting so it resumes next launch

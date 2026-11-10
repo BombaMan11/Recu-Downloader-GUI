@@ -44,6 +44,9 @@ func openDefault(url string) error {
 	return exec.Command(opener(), url).Start()
 }
 
+// HideWindow is only needed on Windows.
+func HideWindow(cmd *exec.Cmd) {}
+
 // ShowError prints the problem (there is no message box off Windows).
 func ShowError(title, text string) {
 	fmt.Fprintf(os.Stderr, "%s: %s\n", title, text)

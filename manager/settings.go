@@ -38,27 +38,32 @@ const (
 // itself; it lives in the pointer file described in package appdata and is
 // only carried here so the settings page can edit it.
 type Settings struct {
-	UserAgent     string  `json:"userAgent"`
-	Cookie        string  `json:"cookie"`
-	Theme         string  `json:"theme"` // system | light | dark
-	Mode          string  `json:"mode"`
-	DoneDir       string  `json:"doneDir"`
-	IncompleteDir string  `json:"incompleteDir"`
-	M3U8Dir       string  `json:"m3u8Dir"`
-	MaxResolution int     `json:"maxResolution"`  // video height, 0 = no limit
-	MaxParallel   int     `json:"maxParallel"`    // Normal mode, 0 = unlimited
-	AutoStart     bool    `json:"autoStart"`      // start new rows as soon as they are added
-	AutoResume    bool    `json:"autoResume"`     // resume unfinished rows on launch
-	FirstPieces   bool    `json:"firstPieces"`    // a new row first downloads its first pieces, then pauses or starts as usual
-	UniqueServer  bool    `json:"uniqueServer"`   // experimental: a row may not use the server of the row above it
-	ServerRetries int     `json:"serverRetries"`  // Unique Server Find: how often a row asks for another server
-	ServerWait    float64 `json:"serverWait"`     // seconds between those tries
-	DeepSearch    bool    `json:"deepSearch"`     // also avoid the servers of the rows further up (needs UniqueServer)
-	DeepPositions int     `json:"deepPositions"`  // how many rows above Deep Search compares
-	LongLasting   bool    `json:"longLasting"`    // experimental: rows are read when started, not when their turn comes
-	SkipRefused   bool    `json:"skipRefused"`    // experimental: a row the site refuses is skipped at once, not retried later
-	SilentReplace bool    `json:"silentReplace"`  // offers Silent Replace: a new cookie without pausing the list
-	BottomFirst   bool    `json:"addBottomFirst"` // links added together go in bottom to top: the bottom link becomes the first row of the batch
+	UserAgent          string  `json:"userAgent"`
+	Cookie             string  `json:"cookie"`
+	Theme              string  `json:"theme"` // system | light | dark
+	Mode               string  `json:"mode"`
+	DoneDir            string  `json:"doneDir"`
+	IncompleteDir      string  `json:"incompleteDir"`
+	M3U8Dir            string  `json:"m3u8Dir"`
+	MaxResolution      int     `json:"maxResolution"`      // video height, 0 = no limit
+	MaxParallel        int     `json:"maxParallel"`        // Normal mode, 0 = unlimited
+	AutoStart          bool    `json:"autoStart"`          // start new rows as soon as they are added
+	AutoResume         bool    `json:"autoResume"`         // resume unfinished rows on launch
+	FirstPieces        bool    `json:"firstPieces"`        // a new row first downloads its first pieces, then pauses or starts as usual
+	UniqueServer       bool    `json:"uniqueServer"`       // experimental: a row may not use the server of the row above it
+	ServerRetries      int     `json:"serverRetries"`      // Unique Server Find: how often a row asks for another server
+	ServerWait         float64 `json:"serverWait"`         // seconds between those tries
+	DeepSearch         bool    `json:"deepSearch"`         // also avoid the servers of the rows further up (needs UniqueServer)
+	DeepPositions      int     `json:"deepPositions"`      // how many rows above Deep Search compares
+	LongLasting        bool    `json:"longLasting"`        // experimental: rows are read when started, not when their turn comes
+	SkipRefused        bool    `json:"skipRefused"`        // experimental: a row the site refuses is skipped at once, not retried later
+	FFmpegDir          string  `json:"ffmpegDir"`          // folder with ffmpeg(.exe); blank = the one in PATH
+	FolderRedirect     string  `json:"folderRedirect"`     // category whose Finished folder the main menu folder button opens; "" = the normal one
+	ForceNameSort      string  `json:"forceNameSort"`      // "az" / "za": the queue is kept in name order (right-click the Name heading); "" = off
+	ConvertMP4         bool    `json:"convertMp4"`         // experimental: finished .ts videos are converted to .mp4 with ffmpeg
+	DeleteAfterConvert bool    `json:"deleteAfterConvert"` // with ConvertMP4: the .ts is deleted once the .mp4 is made
+	SilentReplace      bool    `json:"silentReplace"`      // offers Silent Replace: a new cookie without pausing the list
+	BottomFirst        bool    `json:"addBottomFirst"`     // links added together go in bottom to top: the bottom link becomes the first row of the batch
 
 	DataDir string `json:"dataDir,omitempty"`
 
@@ -159,6 +164,10 @@ func (s *Settings) normalize() {
 		s.M3U8Dir = ""
 	}
 	s.DataDir = strings.TrimSpace(s.DataDir)
+	s.FFmpegDir = strings.TrimSpace(s.FFmpegDir)
+	if s.ForceNameSort != "az" && s.ForceNameSort != "za" {
+		s.ForceNameSort = ""
+	}
 	s.normalizeCategories()
 	s.Listen.normalize()
 	if s.MaxResolution < 0 {

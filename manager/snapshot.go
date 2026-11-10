@@ -69,6 +69,7 @@ type Snapshot struct {
 	Items       []ItemView     `json:"items"`
 	Categories  []CategoryView `json:"categories"`
 	Columns     map[string]int `json:"columns,omitempty"` // table column widths, nil = default
+	ForceSort   string         `json:"forceNameSort"`
 	Listener    ListenerView   `json:"listener"`
 	Totals      Totals         `json:"totals"`
 	Notices     []Notice       `json:"notices"`
@@ -97,6 +98,7 @@ func (m *Manager) Snapshot() Snapshot {
 		Notices:     append([]Notice(nil), m.notices...),
 		App:         m.tag,
 		Columns:     m.settings.ColumnWidths,
+		ForceSort:   m.settings.ForceNameSort,
 		Listener:    ListenerView{Enabled: m.settings.Listen.Enabled, Added: m.listenAdded, Error: m.listenErr, Links: append([]ListenedLink(nil), m.listened...)},
 	}
 	for _, c := range m.settings.Categories {
@@ -135,6 +137,7 @@ func (m *Manager) Snapshot() Snapshot {
 			}
 		case StatusComplete:
 			v.Percent = 100
+			v.Detail = it.convertNote
 			if it.FileSize > 0 {
 				v.FullSize = it.FileSize
 			}

@@ -394,15 +394,18 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Which string `json:"which"`
-		ID    *int64 `json:"id"` // optional: the folder as it applies to this row's category
+		Which    string `json:"which"`
+		ID       *int64 `json:"id"`       // optional: the folder as it applies to this row's category
+		Redirect bool   `json:"redirect"` // the main menu button: "done" follows Folder Button Redirect
 	}
 	if !readJSON(w, r, &req) {
 		return
 	}
 	var dir string
 	var err error
-	if req.ID != nil {
+	if req.Redirect && req.Which == "done" {
+		dir, err = s.opts.Manager.RedirectDir()
+	} else if req.ID != nil {
 		dir, err = s.opts.Manager.DirFor(*req.ID, req.Which)
 	} else {
 		dir, err = s.opts.Manager.Dir(req.Which)
