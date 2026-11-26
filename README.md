@@ -66,14 +66,6 @@ Forces servers for each URL to be different from the one above it.
 
 <div align="center"><img width="-1" height="300" alt="image" src="https://github.com/user-attachments/assets/a265f139-b729-45bb-87bb-23457934787a" /></div>
 
-## Long Lasting Site (Settings → Experimental, on by default). 
-
-<div align="center"><img width="300" height="-1" alt="image" src="https://github.com/user-attachments/assets/d498811f-b4dd-430a-adcf-c1378ebaec52" /></div>
-
-**Ensure Setting is Enabled**
-* When Downloads are started the files are read as they're started using the fresh cookies
-* If turned off the Downloads further down the queue will fail due to a Site Refusal Error as it only reads the cookies (Now Expired) at the time of download
-
 ## Link listener
 
 <div align="center"><img width="-1" height="200" alt="image" src="https://github.com/user-attachments/assets/3fea38d7-7be6-4036-ab79-a08bb96f400d" /></div>
