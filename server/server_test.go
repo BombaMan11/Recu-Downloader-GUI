@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -108,5 +109,32 @@ func TestCookieEndpointReplacesOnlyTheCookie(t *testing.T) {
 	}
 	if m.Settings().Cookie != "new=2; x=3" {
 		t.Error("a refused request changed the cookie")
+	}
+}
+
+// After the first full snapshot the event stream sends only the rows that
+// changed, and the row order only when it changed.
+func TestStreamSendsOnlyChangedRows(t *testing.T) {
+	a, b, c := manager.ItemView{ID: 1, Name: "a"}, manager.ItemView{ID: 2, Name: "b"}, manager.ItemView{ID: 3, Name: "c"}
+	snap := func(items ...manager.ItemView) manager.Snapshot { return manager.Snapshot{Items: items} }
+	js := func(v any) string { out, _ := json.Marshal(v); return string(out) }
+
+	b2 := b
+	b2.Percent = 50
+	msg := changes(snap(a, b, c), snap(a, b2, c))
+	if len(msg.Changed) != 1 || msg.Changed[0] != b2 || msg.Order != nil {
+		t.Fatalf("one row changed: got changed=%v order=%v", msg.Changed, msg.Order)
+	}
+	if s := js(msg); strings.Contains(s, `"items"`) || !strings.Contains(s, `"order":null`) {
+		t.Fatalf("message must leave out items and send order null: %s", s)
+	}
+	if msg := changes(snap(a, b, c), snap(c, a)); len(msg.Changed) != 0 || js(msg.Order) != "[3,1]" {
+		t.Fatalf("removed and moved: got changed=%v order=%v", msg.Changed, msg.Order)
+	}
+	if msg := changes(snap(a), snap(a, b)); len(msg.Changed) != 1 || js(msg.Order) != "[1,2]" {
+		t.Fatalf("added: got changed=%v order=%v", msg.Changed, msg.Order)
+	}
+	if s := js(changes(snap(a), snap())); !strings.Contains(s, `"order":[]`) || !strings.Contains(s, `"changed":[]`) {
+		t.Fatalf("list emptied must send order []: %s", s)
 	}
 }

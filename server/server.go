@@ -112,7 +112,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/add", s.api(http.MethodPost, s.handleAdd))
 	mux.HandleFunc("/api/action", s.api(http.MethodPost, s.handleAction))
 	mux.HandleFunc("/api/mode", s.api(http.MethodPost, s.handleMode))
-	mux.HandleFunc("/api/scan", s.api(http.MethodPost, s.handleScan))
 	mux.HandleFunc("/api/open", s.api(http.MethodPost, s.handleOpen))
 	mux.HandleFunc("/api/reveal", s.api(http.MethodPost, s.handleReveal))
 	mux.HandleFunc("/api/browse", s.api(http.MethodPost, s.handleBrowse))
@@ -189,9 +188,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	defer s.clientDown()
 
 	var last uint64
+	var prev *manager.Snapshot
 	send := func() bool {
 		snap := s.opts.Manager.Snapshot()
-		b, err := json.Marshal(snap)
+		var msg any = snap
+		if prev != nil {
+			msg = changes(*prev, snap)
+		}
+		b, err := json.Marshal(msg)
 		if err != nil {
 			return false
 		}
@@ -199,7 +203,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			return false
 		}
 		flusher.Flush()
-		last = snap.Version
+		last, prev = snap.Version, &snap
 		return true
 	}
 	if !send() {
@@ -226,6 +230,38 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+// streamMsg is what the event stream sends after its first full snapshot: the
+// snapshot without "items", the rows that changed, and the row ids in order
+// when the order or the rows themselves changed (null otherwise).
+type streamMsg struct {
+	manager.Snapshot
+	Items   []manager.ItemView `json:"items,omitempty"` // always nil: hides Snapshot.Items
+	Changed []manager.ItemView `json:"changed"`
+	Order   []int64            `json:"order"`
+}
+
+func changes(prev, cur manager.Snapshot) streamMsg {
+	old := make(map[int64]manager.ItemView, len(prev.Items))
+	for _, it := range prev.Items {
+		old[it.ID] = it
+	}
+	msg := streamMsg{Snapshot: cur, Changed: []manager.ItemView{}}
+	same := len(prev.Items) == len(cur.Items)
+	for i, it := range cur.Items {
+		if o, ok := old[it.ID]; !ok || o != it {
+			msg.Changed = append(msg.Changed, it)
+		}
+		same = same && prev.Items[i].ID == it.ID
+	}
+	if !same {
+		msg.Order = make([]int64, 0, len(cur.Items)) // [] (not null) when the list became empty
+		for _, it := range cur.Items {
+			msg.Order = append(msg.Order, it.ID)
+		}
+	}
+	return msg
 }
 
 func (s *Server) clientUp() {
@@ -334,6 +370,15 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 		if n == 0 {
 			msg = ""
 		}
+	case "resetserver":
+		if n := m.ResetServer(req.IDs); n < len(req.IDs) {
+			msg = plural(len(req.IDs)-n, "row was", "rows were") + " not reset: downloading or finished."
+		}
+	case "uniqueservers":
+		msg = "Looking for repeating servers…"
+		if !m.ResetRepeatingServers() {
+			msg = "Unique servers is already running."
+		}
 	case "activate":
 		m.SetActive(req.IDs, true)
 	case "deactivate":
@@ -371,25 +416,6 @@ func (s *Server) handleColumns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"widths": s.opts.Manager.Settings().ColumnWidths})
-}
-
-func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		URL string `json:"url"`
-	}
-	if !readJSON(w, r, &req) {
-		return
-	}
-	if u := strings.TrimSpace(req.URL); !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
-		fail(w, http.StatusBadRequest, "Enter the address of a page, starting with https://")
-		return
-	}
-	urls, err := s.opts.Manager.ScanPage(strings.TrimSpace(req.URL))
-	if err != nil {
-		fail(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	writeJSON(w, map[string]any{"urls": urls})
 }
 
 func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
@@ -485,29 +511,20 @@ func (s *Server) handleClipboard(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"text": text})
 }
 
-// handleCookie replaces the saved cookie (the main window's Replace cookie button).
+// handleCookie replaces the saved cookie (Replace cookie, in the main window and
+// Settings). Nothing is paused.
 func (s *Server) handleCookie(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Cookie string `json:"cookie"`
-		Silent bool   `json:"silent"`
 	}
 	if !readJSON(w, r, &req) {
 		return
 	}
-	if req.Silent {
-		if err := s.opts.Manager.SetCookieSilently(req.Cookie); err != nil {
-			fail(w, http.StatusBadRequest, "Replace cookie: "+err.Error())
-			return
-		}
-		writeJSON(w, map[string]int{"length": len(strings.TrimSpace(req.Cookie)), "paused": 0})
-		return
-	}
-	paused, err := s.opts.Manager.SetCookie(req.Cookie)
-	if err != nil {
+	if err := s.opts.Manager.SetCookie(req.Cookie); err != nil {
 		fail(w, http.StatusBadRequest, "Replace cookie: "+err.Error())
 		return
 	}
-	writeJSON(w, map[string]int{"length": len(strings.TrimSpace(req.Cookie)), "paused": paused})
+	writeJSON(w, map[string]int{"length": len(strings.TrimSpace(req.Cookie))})
 }
 
 // handleListen switches the link listener on or off.

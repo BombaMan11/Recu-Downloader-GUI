@@ -113,6 +113,10 @@ func TestExtractFoundKeepsTheWholeEntry(t *testing.T) {
 func read(t *testing.T, p string) string {
 	t.Helper()
 	b, err := os.ReadFile(p)
+	// Windows refuses the read while the listener is swapping the file in: try again
+	for deadline := time.Now().Add(time.Second); err != nil && !os.IsNotExist(err) && time.Now().Before(deadline); b, err = os.ReadFile(p) {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,8 +222,8 @@ func TestListenSettingsAreChecked(t *testing.T) {
 	if !l.Enabled || !l.SkipDuplicates || !l.AllowPrivate || len(l.Patterns) == 0 || l.File != "" || !l.NoArchive || !l.NoBackups || l.archivePath() != "" || l.backupsOn() {
 		t.Errorf("defaults: %+v", l)
 	}
-	if old.AutoStart || old.AutoResume {
-		t.Errorf("a new install must not start or resume anything by itself: %+v", old)
+	if old.AutoStart {
+		t.Errorf("a new install must not start anything by itself: %+v", old)
 	}
 }
 
@@ -300,6 +304,10 @@ func TestListenerAddsCopiedLinksToTheTop(t *testing.T) {
 	waitFile("https://Recu.me/video/3/play\nhttps://Recu.me/video/4/play\nhttps://Recu.me/video/xxxxxxy/play\nhttps://Recu.me/video/xxxxxxx/play\n")
 
 	snap := m.Snapshot()
+	// the count and notice follow the file write: give them a moment
+	for deadline := time.Now().Add(3 * time.Second); snap.Listener.Added != 4 && time.Now().Before(deadline); snap = m.Snapshot() {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if snap.Listener.Added != 4 || snap.Listener.Error != "" {
 		t.Errorf("listener view: %+v", snap.Listener)
 	}
@@ -366,6 +374,10 @@ func TestListenerKeepsLinksUntilTheFileCanBeWritten(t *testing.T) {
 	deadline = time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if b, err := os.ReadFile(file); err == nil && strings.Contains(string(b), "/video/9/play") {
+			// the error is cleared just after the file is written
+			for m.Snapshot().Listener.Error != "" && time.Now().Before(deadline) {
+				time.Sleep(10 * time.Millisecond)
+			}
 			if m.Snapshot().Listener.Error != "" {
 				t.Fatal("error not cleared")
 			}
@@ -1006,7 +1018,44 @@ func TestSavedSettingsKeepTheirValuesWhenDefaultsChange(t *testing.T) {
 	defer m.Shutdown()
 	s := m.Settings()
 	l := s.Listen
-	if !s.AutoStart || !s.AutoResume || l.Enabled || l.NoArchive || l.NoBackups || l.SkipDuplicates || l.AllowPrivate || l.archivePath() == "" || !l.backupsOn() {
+	if !s.AutoStart || l.Enabled || l.NoArchive || l.NoBackups || l.SkipDuplicates || l.AllowPrivate || l.archivePath() == "" || !l.backupsOn() {
 		t.Errorf("saved values were replaced by the defaults: %+v / %+v", s, l)
+	}
+}
+
+// A copy of more than 100 links reaches the link box whole; older links are
+// trimmed to the newest 100 again with the next copy.
+func TestListenerOffersAWholeBigCopy(t *testing.T) {
+	m, err := New(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for i := 0; i < 150; i++ {
+		lines = append(lines, fmt.Sprintf(`["https://Recu.me/video/%d/play","0:00","1:00","1:00"]`, i))
+	}
+	m.offerLinks(lines)
+	got := m.Snapshot().Listener.Links
+	if len(got) != 150 || got[0].Line != lines[0] || got[149].Line != lines[149] {
+		t.Fatalf("offered %d of 150 links", len(got))
+	}
+	m.offerLinks([]string{"https://Recu.me/video/x/play"})
+	if got := m.Snapshot().Listener.Links; len(got) != maxListenedLinks || got[len(got)-1].Line != "https://Recu.me/video/x/play" {
+		t.Fatalf("after the next copy: %d links kept, want the newest %d", len(got), maxListenedLinks)
+	}
+}
+
+// One copy can hold up to 2000 links; more are cut off.
+func TestListenerTakes2000LinksPerCopy(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 2100; i++ {
+		fmt.Fprintf(&b, "https://Recu.me/video/%d/play\n", i)
+	}
+	found, err := TryPatterns(nil, b.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 2000 {
+		t.Fatalf("took %d links from one copy, want 2000", len(found))
 	}
 }

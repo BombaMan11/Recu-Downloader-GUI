@@ -90,6 +90,17 @@ func Move(dir string) error {
 	return nil
 }
 
+// Close stops writing to the log file (the log still goes to the console).
+// Tests use it: Windows can not delete a folder with an open file in it.
+func Close() {
+	mu.Lock()
+	defer mu.Unlock()
+	if file != nil {
+		file.Close()
+	}
+	file, path = nil, ""
+}
+
 // Path is the log file currently in use.
 func Path() string {
 	mu.Lock()

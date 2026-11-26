@@ -2,7 +2,6 @@ package manager
 
 import (
 	"strconv"
-	"time"
 
 	"Recurbate/tools"
 )
@@ -39,8 +38,8 @@ type ItemView struct {
 	Category     string `json:"category"`
 	CategoryName string `json:"categoryName"`
 	Error        string `json:"error"`
-	M3U8         bool   `json:"m3u8"`
 	Done         string `json:"donePath"`
+	M3U8         bool   `json:"m3u8"` // its playlist is saved as a .m3u8 (the "playlist saved" tag)
 }
 
 // CategoryView is a category as the add box and the menus list it.
@@ -70,6 +69,8 @@ type Snapshot struct {
 	Categories  []CategoryView `json:"categories"`
 	Columns     map[string]int `json:"columns,omitempty"` // table column widths, nil = default
 	ForceSort   string         `json:"forceNameSort"`
+	StatusOrder []string       `json:"statusOrder"` // the order of the Status sort
+	GroupSplit  bool           `json:"groupSplit"`  // show the parts of a link as one row
 	Listener    ListenerView   `json:"listener"`
 	Totals      Totals         `json:"totals"`
 	Notices     []Notice       `json:"notices"`
@@ -99,6 +100,8 @@ func (m *Manager) Snapshot() Snapshot {
 		App:         m.tag,
 		Columns:     m.settings.ColumnWidths,
 		ForceSort:   m.settings.ForceNameSort,
+		StatusOrder: m.settings.StatusOrder,
+		GroupSplit:  m.settings.GroupSplit,
 		Listener:    ListenerView{Enabled: m.settings.Listen.Enabled, Added: m.listenAdded, Error: m.listenErr, Links: append([]ListenedLink(nil), m.listened...)},
 	}
 	for _, c := range m.settings.Categories {
@@ -110,7 +113,7 @@ func (m *Manager) Snapshot() Snapshot {
 			ID: it.ID, URL: it.URL, Name: displayName(it), Status: string(it.Status),
 			Hint: hints[it.ID], Active: it.Active, Forced: it.Forced,
 			Percent: float64(it.Percent), Bytes: it.FileSize, FullSize: it.FullSize, Server: it.Server,
-			Error: it.Error, M3U8: it.M3U8Saved, Done: it.DonePath,
+			Error: it.Error, Done: it.DonePath, M3U8: it.M3U8Path != "",
 		}
 		if it.FileBase == "" && it.res == nil && it.Status != StatusComplete {
 			v.Name = it.URL
@@ -132,8 +135,8 @@ func (m *Manager) Snapshot() Snapshot {
 		case StatusQueued:
 			if it.preResolving {
 				v.Detail = "Checking server"
-			} else if time.Now().Before(it.preWait) {
-				v.Detail = "Site refused, will try again"
+			} else if it.held {
+				v.Detail = "Waiting for playlist"
 			}
 		case StatusComplete:
 			v.Percent = 100

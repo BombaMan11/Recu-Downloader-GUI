@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"Recurbate/appdata"
+	"Recurbate/engine"
 	"Recurbate/tools"
 )
 
@@ -26,7 +29,6 @@ type storedItem struct {
 	Server   string   `json:"server,omitempty"`
 	Percent  float32  `json:"percent,omitempty"`
 	FullSize int64    `json:"fullSize,omitempty"`
-	M3U8     bool     `json:"m3u8,omitempty"`
 	DonePath string   `json:"donePath,omitempty"`
 	TempPath string   `json:"tempPath,omitempty"`
 	M3U8Path string   `json:"m3u8Path,omitempty"`
@@ -59,10 +61,9 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 // missing or older than backupEvery and path holds valid JSON. Best effort.
 func refreshBackup(path string, perm os.FileMode) {
 	bak := path + ".bak"
+	// fresh enough: not read back, it is written atomically so it is never half-written
 	if st, err := os.Stat(bak); err == nil && time.Since(st.ModTime()) < backupEvery {
-		if cur, err := os.ReadFile(bak); err == nil && json.Valid(cur) {
-			return // fresh enough
-		}
+		return
 	}
 	cur, err := os.ReadFile(path)
 	if err != nil || len(bytes.TrimSpace(cur)) == 0 || !json.Valid(cur) {
@@ -177,7 +178,7 @@ func (m *Manager) saveQueueLocked() error {
 			ID: it.ID, URL: it.URL, Section: it.SectionRef, Active: it.Active,
 			Status: string(it.Status), Error: it.Error, Offset: it.Offset,
 			FileSize: it.FileSize, FileBase: it.FileBase, Server: it.Server,
-			Percent: it.Percent, FullSize: it.FullSize, M3U8: it.M3U8Saved, DonePath: it.DonePath,
+			Percent: it.Percent, FullSize: it.FullSize, DonePath: it.DonePath,
 			TempPath: it.TempPath, M3U8Path: it.M3U8Path, Category: it.Category, VideoSecs: it.VideoSecs,
 			Prime: it.Prime,
 		})
@@ -214,7 +215,7 @@ func (m *Manager) loadQueue() error {
 			ID: s.ID, URL: s.URL, SectionRef: s.Section, Active: s.Active,
 			Status: Status(s.Status), Error: s.Error, Offset: s.Offset,
 			FileSize: s.FileSize, FileBase: s.FileBase, Server: s.Server,
-			Percent: s.Percent, FullSize: s.FullSize, M3U8Saved: s.M3U8, DonePath: s.DonePath,
+			Percent: s.Percent, FullSize: s.FullSize, DonePath: s.DonePath,
 			TempPath: s.TempPath, M3U8Path: s.M3U8Path, Category: s.Category, VideoSecs: s.VideoSecs, Prime: s.Prime,
 			Section: [2]float32{0, 100},
 		}
@@ -236,14 +237,11 @@ func (m *Manager) loadQueue() error {
 			it.SectionRef = nil
 		}
 		switch it.Status {
-		case StatusComplete, StatusError, StatusPaused, StatusSkipped:
+		case StatusComplete, StatusError, StatusPaused:
+		case "skipped": // Skip Site Refused is gone: Start tries it again, as with an error
+			it.Status = StatusError
 		default:
-			// was running or waiting when the program closed
-			if m.settings.AutoResume {
-				it.Status = StatusQueued
-			} else {
-				it.Status = StatusPaused
-			}
+			it.Status = StatusPaused // was running or waiting: nothing starts until Start
 		}
 		if m.settings.category(it.Category) == nil {
 			it.Category = "" // the category was removed
@@ -262,4 +260,138 @@ func (m *Manager) loadQueue() error {
 		m.items = append(m.items, it)
 	}
 	return nil
+}
+
+// sourceTag is the line in a saved .m3u8 that tells where the playlist came
+// from (players ignore it); a row needs it to rebuild its links at the next start.
+const sourceTag = "#Recurbate-SOURCE:"
+
+// playlistPathLocked is where a row's playlist is kept: <M3U8 folder>/<file name>.m3u8.
+func (m *Manager) playlistPathLocked(it *Item) string {
+	return filepath.Join(m.m3u8DirLocked(it), it.FileBase+".m3u8")
+}
+
+// savePlaylistsLocked writes the playlist of each unfinished row that got new
+// links (or a new file name or folder) to its .m3u8, and deletes the .m3u8 of
+// rows that finished or lost their links (removed rows: cleanupRemovedLocked).
+// It runs every second and when the program closes, so a crash loses nothing.
+func (m *Manager) savePlaylistsLocked() {
+	now := map[int64]*engine.Resolved{}
+	for _, it := range m.items {
+		r := it.res
+		if r == nil || it.Status == StatusComplete {
+			if it.M3U8Path != "" {
+				os.Remove(it.M3U8Path)
+				it.M3U8Path = ""
+				m.changedLocked(true)
+			}
+			continue
+		}
+		if it.FileBase == "" {
+			continue // named in a moment
+		}
+		want := m.playlistPathLocked(it)
+		if m.savedLinks[it.ID] != r || it.M3U8Path != want {
+			if writePlaylist(want, r) != nil {
+				continue // tried again next time
+			}
+			if it.M3U8Path != "" && it.M3U8Path != want {
+				os.Remove(it.M3U8Path)
+			}
+			it.M3U8Path = want
+			m.changedLocked(true)
+		}
+		now[it.ID] = r
+	}
+	m.savedLinks = now
+}
+
+func writePlaylist(path string, r *engine.Resolved) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	body := strings.TrimPrefix(string(r.Playlist.M3u8), "#EXTM3U")
+	if !strings.HasPrefix(body, "\n") {
+		body = "\n" + body
+	}
+	return appdata.WriteFileAtomic(path, []byte("#EXTM3U\n"+sourceTag+r.PlaylistURL+body), 0666)
+}
+
+// readPlaylist rebuilds the links from a .m3u8 written by writePlaylist (nil
+// for a missing file, or one saved by an older Get playlist without its source).
+func readPlaylist(path string) *engine.Resolved {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	i := bytes.Index(data, []byte(sourceTag))
+	if i < 0 {
+		return nil
+	}
+	url := strings.TrimSpace(strings.SplitN(string(data[i+len(sourceTag):]), "\n", 2)[0])
+	res, err := engine.Saved(data, url)
+	if err != nil {
+		return nil
+	}
+	return res
+}
+
+// loadPlaylistsLocked gives the unfinished rows their links and server back
+// from their .m3u8. Links saved by v3.4.8 to v3.5.00 (links.json, the links
+// folder) are used for rows without one, written as .m3u8 by the saver, and the
+// old files deleted.
+func (m *Manager) loadPlaylistsLocked() {
+	old := m.oldLinksLocked()
+	m.savedLinks = map[int64]*engine.Resolved{}
+	for _, it := range m.items {
+		if it.Status == StatusComplete {
+			continue
+		}
+		if it.M3U8Path == "" && it.FileBase != "" {
+			it.M3U8Path = m.playlistPathLocked(it) // closed before the queue recorded it
+		}
+		var res *engine.Resolved
+		if it.M3U8Path != "" {
+			res = readPlaylist(it.M3U8Path)
+		}
+		if res != nil {
+			m.savedLinks[it.ID] = res // its file is already there
+		} else if l, ok := old[it.ID]; ok && l.URL == it.URL {
+			res, _ = engine.Saved([]byte(l.M3U8), l.PlaylistURL)
+		}
+		if res != nil {
+			it.res = res
+			setServer(it, res.Server)
+		}
+	}
+	data := m.loc.DataDir(m.baseDir)
+	os.RemoveAll(filepath.Join(data, "links"))
+	os.Remove(filepath.Join(data, "links.json"))
+}
+
+// storedLinks is a row's links as v3.4.8 to v3.5.00 kept them.
+type storedLinks struct {
+	URL         string `json:"url"`
+	PlaylistURL string `json:"playlistUrl"`
+	M3U8        string `json:"m3u8"`
+}
+
+// oldLinksLocked reads the links v3.4.8 to v3.5.00 saved: links.json, then one
+// file per row in the links folder.
+func (m *Manager) oldLinksLocked() map[int64]storedLinks {
+	links := map[int64]storedLinks{}
+	data := m.loc.DataDir(m.baseDir)
+	if b, err := os.ReadFile(filepath.Join(data, "links.json")); err == nil {
+		json.Unmarshal(b, &links)
+	}
+	dir := filepath.Join(data, "links")
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		id, err := strconv.ParseInt(strings.TrimSuffix(e.Name(), ".json"), 10, 64)
+		var l storedLinks
+		if b, rerr := os.ReadFile(filepath.Join(dir, e.Name())); err == nil && rerr == nil && json.Unmarshal(b, &l) == nil {
+			links[id] = l
+		}
+	}
+	return links
 }

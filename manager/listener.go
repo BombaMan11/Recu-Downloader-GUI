@@ -66,7 +66,7 @@ const (
 	maxListenPatterns = 50
 	maxPatternLen     = 500
 	maxClipboardText  = 1 << 20  // bigger clipboards are ignored
-	maxLinksPerCopy   = 500      // more links than this in one copy are cut off
+	maxLinksPerCopy   = 2000     // more links than this in one copy are cut off
 	maxLinkLen        = 4096     //
 	maxListenFile     = 50 << 20 // a bigger file is refused (it is rewritten for every copy)
 	maxPendingLinks   = 5000
@@ -735,7 +735,11 @@ func (m *Manager) offerLinks(links []string) {
 		m.listenSeq++
 		m.listened = append(m.listened, ListenedLink{ID: m.listenSeq, Line: l})
 	}
-	if over := len(m.listened) - maxListenedLinks; over > 0 {
+	keep := maxListenedLinks
+	if len(links) > keep { // a big copy goes to the link box whole; only older links are trimmed
+		keep = len(links)
+	}
+	if over := len(m.listened) - keep; over > 0 {
 		m.listened = m.listened[over:]
 	}
 	m.changedLocked(false)

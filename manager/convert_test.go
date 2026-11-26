@@ -149,6 +149,9 @@ func TestConvertTimelineCheck(t *testing.T) {
 		if fixed != disc {
 			t.Errorf("discontinuity %v: fix mode %v\n%s", disc, fixed, b)
 		}
+		if disc && !strings.Contains(string(b), "-c:a aac ") {
+			t.Errorf("fix mode does not use ffmpeg's own aac encoder (aac_mf on Windows refuses most sample rates)\n%s", b)
+		}
 		if !disc && !strings.Contains(string(b), "-c:a copy") {
 			t.Errorf("plain mode did not copy the audio\n%s", b)
 		}
@@ -197,6 +200,37 @@ func testCtx(t *testing.T) context.Context {
 	return c
 }
 
+// A video whose audio is not 44.1 or 48 kHz (here 32 kHz) with a jump in its
+// timeline converts, keeping its rate (aac_mf refused it: "unsupported input
+// sample rate").
+func TestConvertResamplesOddAudioRates(t *testing.T) {
+	ff, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("no ffmpeg")
+	}
+	dir := t.TempDir()
+	part := func(name, offset string) []byte {
+		p := filepath.Join(dir, name)
+		args := []string{"-loglevel", "error", "-f", "lavfi", "-i", "testsrc=d=2:s=160x120:r=15", "-f", "lavfi", "-i", "sine=d=2:sample_rate=32000",
+			"-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-ar", "32000", "-output_ts_offset", offset, "-f", "mpegts", p}
+		if out, err := exec.Command(ff, args...).CombinedOutput(); err != nil {
+			t.Skipf("can not make a test video: %v %s", err, out)
+		}
+		b, _ := os.ReadFile(p)
+		return b
+	}
+	jump := filepath.Join(dir, "jump.ts")
+	os.WriteFile(jump, append(part("a.ts", "0"), part("b.ts", "5000")...), 0644)
+	dst, err := convertToMP4(testCtx(t), "", jump)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := exec.Command("ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=sample_rate", "-of", "csv=p=0", dst).Output()
+	if got := strings.TrimSpace(string(out)); got != "32000" {
+		t.Errorf("audio at %s Hz, want 32000", got)
+	}
+}
+
 // The FFmpeg Location folder is used instead of PATH; a folder without ffmpeg
 // is an error that names it (and does not quietly use the one in PATH).
 func TestConvertUsesTheFFmpegFolder(t *testing.T) {
@@ -227,5 +261,43 @@ func TestConvertUsesTheFFmpegFolder(t *testing.T) {
 	})
 	if done := e.item(id2).Done; !strings.HasSuffix(done, ".ts") {
 		t.Errorf("done path %q, want the .ts", done)
+	}
+}
+
+// A row removed from the list while it waits to convert still becomes an MP4
+// when its files are kept; removed with its files, it is not converted at all.
+func TestConvertAfterRemove(t *testing.T) {
+	ff, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("no ffmpeg")
+	}
+	m, err := New(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := filepath.Join(t.TempDir(), "video.ts")
+	if out, err := exec.Command(ff, "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=d=1:s=160x120:r=15",
+		"-c:v", "libx264", "-preset", "ultrafast", "-f", "mpegts", ts).CombinedOutput(); err != nil {
+		t.Skipf("can not make a test video: %v %s", err, out)
+	}
+	mp4 := strings.TrimSuffix(ts, ".ts") + ".mp4"
+
+	kept := &Item{Status: StatusComplete, DonePath: ts, removed: true}
+	m.convert(kept)
+	if _, err := os.Stat(mp4); err != nil {
+		t.Fatal("removed from the list with its files kept: no MP4")
+	}
+
+	os.Remove(mp4)
+	os.Remove(ts) // Remove with "delete files" has deleted the video
+	gone := &Item{Status: StatusComplete, DonePath: ts, removed: true, deleteFiles: true}
+	m.convert(gone)
+	for _, n := range m.Snapshot().Notices {
+		if strings.Contains(n.Text, "Could not convert") {
+			t.Fatalf("tried to convert a deleted video: %s", n.Text)
+		}
+	}
+	if _, err := os.Stat(mp4); err == nil {
+		t.Fatal("an MP4 was made for a deleted video")
 	}
 }

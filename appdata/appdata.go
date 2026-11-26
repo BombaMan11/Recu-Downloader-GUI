@@ -173,18 +173,37 @@ func CheckWritable(dir string) error {
 	return os.Remove(name)
 }
 
+// renameFile is os.Rename; a test replaces it to reach the copy.
+var renameFile = os.Rename
+
 // MoveFile moves a file, copying when the folders are on different drives.
+// The copy streams (videos can be gigabytes) and is on the disk before the
+// original is deleted; a copy that fails is removed and the original kept.
 func MoveFile(src, dst string, perm os.FileMode) error {
-	if err := os.Rename(src, dst); err == nil {
+	if err := renameFile(src, dst); err == nil {
 		return nil
 	}
-	data, err := os.ReadFile(src)
+	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(dst, data, perm); err != nil {
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
 		return err
 	}
+	_, err = io.Copy(out, in)
+	if err == nil {
+		err = out.Sync()
+	}
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(dst)
+		return err
+	}
+	in.Close()
 	return os.Remove(src)
 }
 

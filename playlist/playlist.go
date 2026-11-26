@@ -49,9 +49,6 @@ func New(warn func(error), raw_m3u8 []byte, url string) (playList Playlist, err 
 func (p *Playlist) Len() int {
 	return len(p.List)
 }
-func (p *Playlist) IsNil() bool {
-	return p.M3u8 == nil
-}
 
 // returns playlists domain name
 func (p *Playlist) PlaylistOrigin() (domain string, err error) {

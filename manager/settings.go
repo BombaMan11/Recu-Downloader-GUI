@@ -48,22 +48,14 @@ type Settings struct {
 	MaxResolution      int     `json:"maxResolution"`      // video height, 0 = no limit
 	MaxParallel        int     `json:"maxParallel"`        // Normal mode, 0 = unlimited
 	AutoStart          bool    `json:"autoStart"`          // start new rows as soon as they are added
-	AutoResume         bool    `json:"autoResume"`         // resume unfinished rows on launch
 	FirstPieces        bool    `json:"firstPieces"`        // a new row first downloads its first pieces, then pauses or starts as usual
-	UniqueServer       bool    `json:"uniqueServer"`       // experimental: a row may not use the server of the row above it
-	ServerRetries      int     `json:"serverRetries"`      // Unique Server Find: how often a row asks for another server
-	ServerWait         float64 `json:"serverWait"`         // seconds between those tries
-	DeepSearch         bool    `json:"deepSearch"`         // also avoid the servers of the rows further up (needs UniqueServer)
-	DeepPositions      int     `json:"deepPositions"`      // how many rows above Deep Search compares
-	LongLasting        bool    `json:"longLasting"`        // experimental: rows are read when started, not when their turn comes
-	SkipRefused        bool    `json:"skipRefused"`        // experimental: a row the site refuses is skipped at once, not retried later
+	UniqueServers      bool    `json:"uniqueServers"`      // experimental: a new playlist on the server of the row above is read again (readUnique)
+	UniqueWait         float64 `json:"uniqueWait"`         // seconds before every Unique Servers try (0.1 to 60)
 	FFmpegDir          string  `json:"ffmpegDir"`          // folder with ffmpeg(.exe); blank = the one in PATH
 	FolderRedirect     string  `json:"folderRedirect"`     // category whose Finished folder the main menu folder button opens; "" = the normal one
 	ForceNameSort      string  `json:"forceNameSort"`      // "az" / "za": the queue is kept in name order (right-click the Name heading); "" = off
 	ConvertMP4         bool    `json:"convertMp4"`         // experimental: finished .ts videos are converted to .mp4 with ffmpeg
 	DeleteAfterConvert bool    `json:"deleteAfterConvert"` // with ConvertMP4: the .ts is deleted once the .mp4 is made
-	SilentReplace      bool    `json:"silentReplace"`      // offers Silent Replace: a new cookie without pausing the list
-	BottomFirst        bool    `json:"addBottomFirst"`     // links added together go in bottom to top: the bottom link becomes the first row of the batch
 
 	DataDir string `json:"dataDir,omitempty"`
 
@@ -71,6 +63,14 @@ type Settings struct {
 
 	// Listen is the clipboard link listener (see listener.go).
 	Listen ListenSettings `json:"listen"`
+
+	// StatusOrder is the order the Status sort puts the rows in (Settings → Table),
+	// first to last, as names from statusGroups.
+	StatusOrder []string `json:"statusOrder"`
+
+	// GroupSplit shows the parts of one link (name, name_01, ...) as one row
+	// that opens with [+] (Settings → Table). Only the page uses it.
+	GroupSplit bool `json:"groupSplit"`
 
 	// ColumnWidths are the table's column widths in pixels, by column key
 	// (empty = the default layout). Changed by dragging the column borders.
@@ -90,12 +90,13 @@ func orDefault(v, def string) string {
 
 func DefaultSettings() Settings {
 	return Settings{
+		StatusOrder:   cleanStatusOrder(nil),
 		Theme:         "system",
 		FirstPieces:   true,
-		LongLasting:   true,
-		ServerRetries: 10, ServerWait: 1, DeepPositions: 2,
-		Mode: string(ModeHybrid),
-		// AutoStart and AutoResume are off: nothing starts until the person says so.
+		UniqueServers: true,
+		UniqueWait:    1,
+		Mode:          string(ModeHybrid),
+		// AutoStart is off: nothing starts until the person says so (and unfinished rows open paused).
 		Listen: ListenSettings{
 			Enabled:        true,
 			Patterns:       append([]string(nil), DefaultListenPatterns...),
@@ -137,8 +138,28 @@ func cleanColumnWidths(in map[string]int) map[string]int {
 	return out
 }
 
+// statusGroups are the groups of the Status sort, in their default order.
+var statusGroups = []string{"downloading", "error", "finished", "checking", "waiting", "paused", "inactive"}
+
+// cleanStatusOrder keeps the known groups once each, in the order given, and
+// adds the missing ones in their default order.
+func cleanStatusOrder(in []string) []string {
+	out := []string{}
+	seen := map[string]bool{}
+	for _, g := range append(append([]string{}, in...), statusGroups...) {
+		for _, k := range statusGroups {
+			if g == k && !seen[g] {
+				seen[g] = true
+				out = append(out, g)
+			}
+		}
+	}
+	return out
+}
+
 func (s *Settings) normalize() {
 	s.ColumnWidths = cleanColumnWidths(s.ColumnWidths)
+	s.StatusOrder = cleanStatusOrder(s.StatusOrder)
 	s.UserAgent = strings.TrimSpace(headerCleaner.Replace(s.UserAgent))
 	s.Cookie = strings.TrimSpace(headerCleaner.Replace(s.Cookie))
 	switch s.Theme {
@@ -176,24 +197,12 @@ func (s *Settings) normalize() {
 	if s.MaxParallel < 0 {
 		s.MaxParallel = 0
 	}
-	s.ServerRetries = clampInt(s.ServerRetries, 1, 100)
-	if s.ServerWait < 0.1 || s.ServerWait != s.ServerWait {
-		s.ServerWait = 0.1
+	if !(s.UniqueWait >= 0.1) {
+		s.UniqueWait = 0.1
 	}
-	if s.ServerWait > 60 {
-		s.ServerWait = 60
+	if s.UniqueWait > 60 {
+		s.UniqueWait = 60
 	}
-	s.DeepPositions = clampInt(s.DeepPositions, 2, 20)
-}
-
-func clampInt(v, lo, hi int) int {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
 }
 
 // credsOK: the original refused to run without a cookie and a user agent.

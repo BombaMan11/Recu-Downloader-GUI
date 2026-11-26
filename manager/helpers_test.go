@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"Recurbate/applog"
 	"Recurbate/internal/mocksite"
 )
 
@@ -29,14 +30,16 @@ func newTestEnv(t *testing.T, mode string, tweak func(*mocksite.Site)) *testEnv 
 		tweak(site)
 	}
 	dir := t.TempDir()
+	// a moved data folder takes the log along into the temp folders; close it
+	// before they are deleted (Windows can not delete an open file)
+	t.Cleanup(applog.Close)
 	e := &testEnv{t: t, site: site, dir: dir}
 	e.m = e.openManager()
 	e.setSettings(func(s *Settings) {
 		s.UserAgent = site.UA
 		s.Cookie = site.Cookie
-		s.AutoStart, s.AutoResume = true, true // off in a new install; most tests want rows to run
-		s.FirstPieces = false                  // on in a new install; the tests that want it turn it on
-		s.LongLasting = false                  // on in a new install; the tests that want it turn it on
+		s.AutoStart = true    // off in a new install; most tests want rows to run
+		s.FirstPieces = false // on in a new install; the tests that want it turn it on
 	})
 	if err := e.m.SetMode(mode); err != nil {
 		t.Fatal(err)

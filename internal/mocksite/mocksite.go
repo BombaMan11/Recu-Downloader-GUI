@@ -26,23 +26,26 @@ import (
 //
 // Videos with an even id live on cdn 0, odd ids on cdn 1.
 type Site struct {
-	main    *httptest.Server
-	cdns    []*httptest.Server
-	Lines   int // segment lines in the media playlist (the downloader drops the first and last)
-	SegSize int
-	Delay   time.Duration
-	Cookie  string
-	UA      string
+	main         *httptest.Server
+	cdns         []*httptest.Server
+	Lines        int // segment lines in the media playlist (the downloader drops the first and last)
+	SegSize      int
+	Delay        time.Duration
+	ResolveDelay time.Duration // how long a video page takes to answer
+	Cookie       string
+	UA           string
 
-	mu        sync.Mutex
-	rid       int
-	minValid  int
-	failOnce  map[int]bool
-	subscribe bool
-	jsonAPI   bool
-	problems  []string
-	resolves  int
-	shift     int // moves every video to the other server when odd
+	mu          sync.Mutex
+	rid         int
+	minValid    int
+	failOnce    map[int]bool
+	subscribe   bool
+	jsonAPI     bool
+	problems    []string
+	resolves    int
+	reading     int // video pages being answered right now
+	mostReading int // the most at once
+	shift       int // moves every video to the other server when odd
 
 	expiredCode int             // status for expired links (410 by default)
 	linkLife    time.Duration   // how long handed-out links work
@@ -84,6 +87,13 @@ func (s *Site) Problems() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.problems...)
+}
+
+// MostReadsAtOnce is the most video pages that were being read at the same time.
+func (s *Site) MostReadsAtOnce() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.mostReading
 }
 
 // Resolves counts how many times a video page was turned into a playlist.
@@ -293,6 +303,14 @@ func (s *Site) mainHandler(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.rid++
 		s.resolves++
+		s.reading++
+		if s.reading > s.mostReading {
+			s.mostReading = s.reading
+		}
+		s.mu.Unlock()
+		time.Sleep(s.ResolveDelay)
+		s.mu.Lock()
+		s.reading--
 		s.mu.Unlock()
 		html := fmt.Sprintf(`<video><source src="%s/hls/user%s/2024-01-02,10-30-45/playlist.m3u8?x=1&amp;y=2" type="application/x-mpegURL"></video>`,
 			s.cdns[s.cdnIndex(n)].URL, id)

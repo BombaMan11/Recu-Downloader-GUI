@@ -13,6 +13,8 @@
     settingsDirty: false,
     serverIndex: new Map(),
     sort: null, // { key, dir: 1 | -1 } when a column heading was clicked, view only
+    openGroups: new Set(), // Group Split Videos: the links whose parts are shown
+    search: '', // Search Names: only names with this in them are shown (lower case)
   };
 
   // ---------- api ----------
@@ -197,24 +199,43 @@
       case 'downloading': return { label: 'Downloading', cls: 'downloading', detail: it.detail };
       case 'complete': return it.detail ? { label: it.detail, cls: 'working' } : { label: 'Finished', cls: 'complete' };
       case 'error': return { label: 'Error: ' + (it.error || 'failed'), cls: 'error' };
-      case 'skipped': return { label: 'Skipped - Site Refused', cls: 'skipped' };
       default: return { label: it.status, cls: 'queued' };
     }
+  }
+
+  // The Status sort goes by groups, in the order set in Settings → Table (the
+  // boxes). Rows in the same group keep the queue order.
+  const STATUS_BOXES = {
+    downloading: 'Downloading/Converting', error: 'Error', finished: 'Finished',
+    checking: 'Checking Server', waiting: 'Waiting', paused: 'Paused', inactive: 'Inactive',
+  };
+  function statusGroup(it) {
+    const cls = statusOf(it).cls;
+    if (it.status === 'downloading' || (it.status === 'complete' && it.detail)) return 'downloading';
+    if (it.status === 'complete') return 'finished';
+    if (cls === 'working') return 'checking'; // and the other steps before a download
+    if (cls === 'queued') return 'waiting';
+    return cls; // inactive, paused, error
+  }
+  function statusRank(it) {
+    const order = (state.snap && state.snap.statusOrder) || Object.keys(STATUS_BOXES);
+    const i = order.indexOf(statusGroup(it));
+    return i < 0 ? order.length : i;
   }
 
   function put(r, key, value, apply) {
     if (r.v[key] !== value) { r.v[key] = value; apply(value); }
   }
 
-  function updateRow(r, it, index) {
+  function updateRow(r, it, index, part) {
     const st = statusOf(it);
-    put(r, 'cls', ['s-' + st.cls, it.active ? '' : 'inactive', it.next ? 'next' : '', state.selected.has(it.id) ? 'selected' : ''].join(' '),
+    put(r, 'cls', ['s-' + st.cls, it.active ? '' : 'inactive', it.next ? 'next' : '', state.selected.has(it.id) ? 'selected' : '', part ? 'part' : ''].join(' '),
       (v) => { r.tr.className = v.replace(/\s+/g, ' ').trim(); });
     put(r, 'active', it.active, (v) => { r.cb.checked = v; });
     put(r, 'n', index + 1, (v) => { r.n.textContent = v; });
     put(r, 'name', it.name, (v) => { r.nm.textContent = v; });
-    put(r, 'title', it.url + (it.error ? '\n' + it.error : ''), (v) => { r.nm.parentNode.title = v; });
     put(r, 'tag', it.m3u8, (v) => { r.tag.hidden = !v; });
+    put(r, 'title', it.url + (it.error ? '\n' + it.error : ''), (v) => { r.nm.parentNode.title = v; });
     put(r, 'forced', it.forced && it.status !== 'complete', (v) => { r.forced.hidden = !v; r.forced.setAttribute('aria-label', 'Force started'); });
     put(r, 'stt', st.label, (v) => { r.stt.textContent = v; r.stt.parentNode.title = v; });
     put(r, 'pill', st.pill || '', (v) => { r.pill.hidden = !v; r.pill.textContent = v; });
@@ -250,7 +271,7 @@
   const num = (v) => (typeof v === 'number' && v >= 0 ? v : null);
   const SORTS = {
     name: { text: true, get: (it) => it.name },
-    status: { text: true, get: (it) => statusOf(it).label },
+    status: { text: true, get: (it) => (it.rank !== undefined ? it.rank : statusRank(it)), up: 'in the set order', down: 'reversed' },
     progress: { get: (it) => (it.status === 'complete' ? 100 : num(it.percent)) },
     speed: { get: (it) => (it.status === 'downloading' ? num(it.speed) : null) },
     eta: { get: (it) => (it.status === 'downloading' ? num(it.etaSec) : null) },
@@ -263,12 +284,12 @@
     duration: { get: (it) => num(it.durSec) },
   };
   const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
-  function viewItems() {
-    const items = state.snap.items;
+  function sortUnits(list) {
     const s = state.sort && SORTS[state.sort.key];
-    if (!s) return items.map((it, i) => ({ it, q: i }));
+    if (!s) return list;
     const dir = state.sort.dir;
-    return items.map((it, i) => ({ it, q: i, v: s.get(it) })).sort((a, b) => {
+    list.forEach((u) => { u.v = s.get(u.it); });
+    return list.sort((a, b) => {
       const ea = a.v === null || a.v === undefined || a.v === '';
       const eb = b.v === null || b.v === undefined || b.v === '';
       if (ea !== eb) return ea ? 1 : -1; // nothing to compare always goes last
@@ -279,7 +300,129 @@
       return a.q - b.q;
     });
   }
-  function viewIds() { return state.snap ? viewItems().map((x) => x.it.id) : []; }
+
+  // ---------- Group Split Videos: the parts of one link shown as one row ----------
+  // What is shown is a list of units: a row, or a group ({ it: its summary, parts }).
+  // A group sorts as one row by its summary; its parts are sorted among themselves
+  // (by name, so name, name_01, ..., when no column is sorted).
+  function viewUnits() {
+    const items = state.snap.items;
+    const byLink = new Map();
+    if (state.snap.groupSplit) items.forEach((it, q) => {
+      if (!byLink.has(it.url)) byLink.set(it.url, []);
+      byLink.get(it.url).push({ it, q });
+    });
+    const units = [];
+    const done = new Set();
+    items.forEach((it, q) => {
+      const parts = byLink.get(it.url);
+      if (!parts || parts.length < 2) { units.push({ it, q }); return; }
+      if (done.has(it.url)) return;
+      done.add(it.url);
+      if (state.sort) sortUnits(parts); else parts.sort((a, b) => collator.compare(a.it.name, b.it.name) || a.q - b.q);
+      units.push({ it: groupSummary(it.url, parts.map((p) => p.it)), q, parts });
+    });
+    // Search Names: a row is shown when its name has the text in it; a group when
+    // one of its parts has (it then shows only those parts, but sums up all of them)
+    const has = (it) => !state.search || String(it.name || '').toLowerCase().includes(state.search);
+    const shown = units.filter((u) => {
+      if (!u.parts) return has(u.it);
+      u.parts = u.parts.filter((p) => has(p.it));
+      return u.parts.length > 0;
+    });
+    return sortUnits(shown);
+  }
+  function viewIds() { // what is shown, top to bottom, with the parts of closed groups
+    if (!state.snap) return [];
+    return viewUnits().flatMap((u) => (u.parts ? u.parts.map((p) => p.it.id) : [u.it.id]));
+  }
+  function groupSummary(link, parts) {
+    const names = parts.map((p) => p.name);
+    const base = names[0].replace(/_\d{2}$/, '');
+    const finished = (p) => p.status === 'complete' && !p.detail;
+    const left = parts.filter((p) => !finished(p));
+    // the status shown is the one of the parts still to do that comes first in the Status sort order
+    const lead = (left.length ? left : parts).reduce((a, b) => (statusRank(b) < statusRank(a) ? b : a));
+    const done = parts.length - left.length;
+    const running = parts.filter((p) => p.status === 'downloading');
+    const weight = (p) => (p.durSec > 0 ? p.durSec : 1);
+    const all = (f) => parts.every((p) => p[f] > 0);
+    const add = (f) => parts.reduce((s, p) => s + (p[f] > 0 ? p[f] : 0), 0);
+    const cats = new Set(parts.map((p) => p.categoryName || ''));
+    const starts = parts.map((p) => p.startSec).filter((v) => v >= 0);
+    const ends = parts.map((p) => p.endSec).filter((v) => v >= 0);
+    return {
+      link, parts, lead, done,
+      name: names.every((n) => n === base || n.startsWith(base + '_')) ? base : names[0],
+      status: done === parts.length ? 'complete' : running.length ? 'downloading' : lead.status,
+      rank: statusRank(lead),
+      percent: parts.reduce((s, p) => s + weight(p) * (p.status === 'complete' ? 100 : Math.max(0, p.percent || 0)), 0) / parts.reduce((s, p) => s + weight(p), 0),
+      speed: running.reduce((s, p) => s + (p.speed || 0), 0),
+      etaSec: running.length ? Math.max(...running.map((p) => (p.etaSec > 0 ? p.etaSec : 0))) : -1,
+      bytes: add('bytes'),
+      fullSize: all('fullSize') ? add('fullSize') : 0,
+      categoryName: cats.size === 1 ? [...cats][0] : '',
+      server: '',
+      startSec: starts.length ? Math.min(...starts) : -1,
+      endSec: ends.length ? Math.max(...ends) : -1,
+      durSec: all('durSec') ? add('durSec') : -1,
+    };
+  }
+  const groupRows = new Map(); // link -> row refs
+  function makeGroupRow(link) {
+    const r = makeRow(0);
+    delete r.tr.dataset.id;
+    r.tr.dataset.group = link;
+    r.toggle = document.createElement('button');
+    r.toggle.type = 'button';
+    r.toggle.className = 'gtoggle';
+    r.nm.parentNode.insertBefore(r.toggle, r.nm);
+    return r;
+  }
+  function updateGroupRow(r, u) {
+    const s = u.it, parts = s.parts, n = parts.length;
+    const st = s.done === n ? { label: 'Finished', cls: 'complete' } : statusOf(s.lead);
+    const live = parts.filter((p) => p.status !== 'complete');
+    const sel = parts.every((p) => state.selected.has(p.id));
+    put(r, 'cls', ['grp', 's-' + st.cls, sel ? 'selected' : ''].join(' '), (v) => { r.tr.className = v.replace(/\s+/g, ' ').trim(); });
+    put(r, 'active', live.length === 0 ? 'none' : live.every((p) => p.active) ? 'all' : live.some((p) => p.active) ? 'some' : 'off', (v) => {
+      r.cb.checked = v === 'all'; r.cb.indeterminate = v === 'some'; r.cb.disabled = v === 'none';
+    });
+    put(r, 'n', u.q + 1, (v) => { r.n.textContent = v; });
+    put(r, 'open', state.openGroups.has(s.link), (v) => {
+      r.toggle.textContent = v ? '−' : '+';
+      r.toggle.setAttribute('aria-expanded', String(v));
+      r.toggle.setAttribute('aria-label', (v ? 'Hide' : 'Show') + ' the parts');
+    });
+    put(r, 'name', s.name + ' (' + n + ' parts)', (v) => { r.nm.textContent = v; });
+    put(r, 'title', s.link, (v) => { r.nm.parentNode.title = v; });
+    put(r, 'stt', st.label, (v) => { r.stt.textContent = v; r.stt.parentNode.title = v; });
+    put(r, 'det', s.done < n ? s.done + '/' + n + ' Finished' : '', (v) => { r.det.textContent = v; });
+    const pct = Math.max(0, Math.min(100, s.percent || 0));
+    put(r, 'pct', pct, (v) => { r.fill.style.width = v + '%'; });
+    put(r, 'pctLabel', s.status === 'complete' ? '100%' : (pct > 0 ? pct.toFixed(1) + '%' : ''), (v) => { r.pct.textContent = v; });
+    const running = s.status === 'downloading';
+    put(r, 'sp', running ? fmtSpeed(s.speed) : '', (v) => { r.sp.textContent = v; });
+    put(r, 'eta', running ? fmtEta(s.etaSec) : '', (v) => { r.eta.textContent = v; });
+    put(r, 'sz', fmtBytes(s.bytes), (v) => { r.sz.textContent = v; });
+    put(r, 'fz', s.fullSize > 0 ? (s.status === 'complete' ? '' : '~') + fmtBytes(s.fullSize) : '', (v) => { r.fz.textContent = v; });
+    put(r, 'cat', s.categoryName, (v) => { r.cat.textContent = v; r.cat.title = v; });
+    put(r, 'start', fmtClock(s.startSec), (v) => { r.t1.textContent = v; });
+    put(r, 'end', fmtClock(s.endSec), (v) => { r.t2.textContent = v; });
+    put(r, 'dur', fmtClock(s.durSec), (v) => { r.t3.textContent = v; });
+  }
+  function partIds(link) { return state.snap.items.filter((it) => it.url === link).map((it) => it.id); }
+  // the rows and groups shown, top to bottom, with the ids each one stands for
+  function shownEntries() {
+    const out = [];
+    for (const u of viewUnits()) {
+      if (!u.parts) { const r = rows.get(u.it.id); if (r) out.push({ ids: [u.it.id], tr: r.tr }); continue; }
+      const g = groupRows.get(u.it.link);
+      if (g) out.push({ ids: u.parts.map((p) => p.it.id), tr: g.tr });
+      if (state.openGroups.has(u.it.link)) for (const p of u.parts) { const r = rows.get(p.it.id); if (r) out.push({ ids: [p.it.id], tr: r.tr }); }
+    }
+    return out;
+  }
   function paintSortHeads() {
     $$('#grid thead th').forEach((th) => {
       const on = state.sort && th.dataset.col === state.sort.key;
@@ -374,8 +517,8 @@
       if (s) {
         const first = s.text ? 1 : -1;
         const on = (d) => !!state.sort && state.sort.key === key && state.sort.dir === d;
-        list.push({ label: 'Sort by ' + label + (s.text ? ' (A to Z)' : (first === -1 ? ' (largest first)' : '')), fn: () => setSort(key, first), on: on(first) });
-        list.push({ label: 'Sort by ' + label + (s.text ? ' (Z to A)' : ' (smallest first)'), fn: () => setSort(key, -first), on: on(-first) });
+        list.push({ label: 'Sort by ' + label + (s.up ? ' (' + s.up + ')' : s.text ? ' (A to Z)' : (first === -1 ? ' (largest first)' : '')), fn: () => setSort(key, first), on: on(first) });
+        list.push({ label: 'Sort by ' + label + (s.down ? ' (' + s.down + ')' : s.text ? ' (Z to A)' : ' (smallest first)'), fn: () => setSort(key, -first), on: on(-first) });
       }
       if (key === 'name') {
         // unlike the view sorts above, this one keeps the queue itself in name order
@@ -391,18 +534,38 @@
 
   function renderTable() {
     const items = state.snap.items;
-    const keep = new Set();
-    viewItems().forEach(({ it, q }, i) => {
-      keep.add(it.id);
+    const keep = new Set(), keepGroups = new Set();
+    let i = 0;
+    const place = (tr) => { if (tbody.children[i] !== tr) tbody.insertBefore(tr, tbody.children[i] || null); i++; };
+    const show = ({ it, q }, part) => {
       let r = rows.get(it.id);
       if (!r) { r = makeRow(it.id); rows.set(it.id, r); }
-      updateRow(r, it, q);
-      if (tbody.children[i] !== r.tr) tbody.insertBefore(r.tr, tbody.children[i] || null);
-    });
+      updateRow(r, it, q, part);
+      place(r.tr);
+    };
+    for (const u of viewUnits()) {
+      if (!u.parts) { keep.add(u.it.id); show(u, false); continue; }
+      const link = u.it.link;
+      keepGroups.add(link);
+      let g = groupRows.get(link);
+      if (!g) { g = makeGroupRow(link); groupRows.set(link, g); }
+      updateGroupRow(g, u);
+      place(g.tr);
+      const open = state.openGroups.has(link);
+      for (const p of u.parts) {
+        keep.add(p.it.id);
+        if (open) show(p, true);
+        else if (rows.has(p.it.id)) rows.get(p.it.id).tr.remove(); // kept, just not shown
+      }
+    }
     for (const [id, r] of rows) {
       if (!keep.has(id)) { r.tr.remove(); rows.delete(id); state.selected.delete(id); }
     }
+    for (const [link, g] of groupRows) {
+      if (!keepGroups.has(link)) { g.tr.remove(); groupRows.delete(link); }
+    }
     $('#empty').hidden = items.length > 0;
+    $('#noMatch').hidden = !(items.length > 0 && keep.size === 0);
     // header checkbox: all active / none / mixed
     const live = items.filter((it) => it.status !== 'complete');
     const on = live.filter((it) => it.active).length;
@@ -423,28 +586,51 @@
       // keep the cached class string in step so the next update does not undo this
       r.v.cls = r.tr.className;
     }
+    for (const [link, g] of groupRows) {
+      const ids = partIds(link);
+      g.tr.classList.toggle('selected', ids.length > 0 && ids.every((id) => state.selected.has(id)));
+      g.v.cls = g.tr.className;
+    }
     const has = state.selected.size > 0;
     $$('[data-needs="sel"]').forEach((b) => {
       b.disabled = !has;
     });
   }
 
-  function selectRow(id, ev) {
+  // pick: the ids of the row clicked (all the parts for a group row)
+  function selectRow(pick, ev) {
     const ids = viewIds(); // a range follows what is shown
     if (ev.shiftKey && state.anchor != null && ids.includes(state.anchor)) {
-      const a = ids.indexOf(state.anchor);
-      const b = ids.indexOf(id);
-      const [lo, hi] = a < b ? [a, b] : [b, a];
+      const at = pick.map((id) => ids.indexOf(id)).concat(ids.indexOf(state.anchor));
+      const lo = Math.min(...at), hi = Math.max(...at);
       if (!(ev.ctrlKey || ev.metaKey)) state.selected.clear();
       for (let i = lo; i <= hi; i++) state.selected.add(ids[i]);
     } else if (ev.ctrlKey || ev.metaKey) {
-      if (state.selected.has(id)) state.selected.delete(id); else state.selected.add(id);
-      state.anchor = id;
+      const all = pick.every((id) => state.selected.has(id));
+      pick.forEach((id) => (all ? state.selected.delete(id) : state.selected.add(id)));
+      state.anchor = pick[0];
     } else {
       state.selected.clear();
-      state.selected.add(id);
-      state.anchor = id;
+      pick.forEach((id) => state.selected.add(id));
+      state.anchor = pick[0];
     }
+    paintSelection();
+  }
+  function rowIds(tr) { return tr.dataset.group ? partIds(tr.dataset.group) : [Number(tr.dataset.id)]; }
+  // Expand/Collapse groups (shown with Group Split Videos on): opens every
+  // group, or closes them all when every group is open already.
+  $('#expandGroups').addEventListener('click', () => {
+    const count = new Map();
+    state.snap.items.forEach((it) => count.set(it.url, (count.get(it.url) || 0) + 1));
+    const links = [...count].filter(([, n]) => n > 1).map(([link]) => link);
+    const allOpen = links.every((link) => state.openGroups.has(link));
+    links.forEach((link) => { if (allOpen) state.openGroups.delete(link); else state.openGroups.add(link); });
+    renderTable();
+    paintSelection();
+  });
+  function toggleGroup(link) {
+    if (state.openGroups.has(link)) state.openGroups.delete(link); else state.openGroups.add(link);
+    renderTable();
     paintSelection();
   }
 
@@ -482,11 +668,11 @@
       const overTable = right >= tl && left <= tr;
       const next = additive || adding ? new Set(base) : new Set();
       if (overTable) {
-        for (const [id, r] of rows) {
-          const rb = r.tr.getBoundingClientRect();
+        for (const en of shownEntries()) {
+          const rb = en.tr.getBoundingClientRect();
           const rTop = rb.top - b.top + wrap.scrollTop, rBottom = rb.bottom - b.top + wrap.scrollTop;
           if (rBottom < top || rTop > bottom) continue;
-          if (additive && base.has(id)) next.delete(id); else next.add(id);
+          for (const id of en.ids) { if (additive && base.has(id)) next.delete(id); else next.add(id); }
         }
       }
       state.selected = next;
@@ -534,12 +720,14 @@
   tbody.addEventListener('click', (e) => {
     const tr = e.target.closest('tr');
     if (!tr || e.target.closest('.c-act')) return;
-    selectRow(Number(tr.dataset.id), e);
+    if (e.target.closest('.gtoggle')) { toggleGroup(tr.dataset.group); return; }
+    selectRow(rowIds(tr), e);
   });
   // double-click: show the file where it is now (unfinished or finished folder)
   tbody.addEventListener('dblclick', (e) => {
     const tr = e.target.closest('tr');
     if (!tr || e.target.closest('.c-act') || e.target.closest('input, button, a')) return;
+    if (tr.dataset.group) { toggleGroup(tr.dataset.group); return; } // a group opens or closes
     revealFile(Number(tr.dataset.id));
   });
   async function revealFile(id) {
@@ -549,8 +737,8 @@
     const tr = e.target.closest('tr');
     e.preventDefault();
     if (!tr) return;
-    const id = Number(tr.dataset.id);
-    if (!state.selected.has(id)) { state.selected.clear(); state.selected.add(id); state.anchor = id; paintSelection(); }
+    const ids = rowIds(tr);
+    if (!ids.every((id) => state.selected.has(id))) { state.selected.clear(); ids.forEach((id) => state.selected.add(id)); state.anchor = ids[0]; paintSelection(); }
     openMenu(e.clientX, e.clientY);
   });
   $('#tableWrap').addEventListener('click', (e) => {
@@ -559,8 +747,9 @@
   });
   tbody.addEventListener('change', async (e) => {
     if (!e.target.matches('input[type="checkbox"]')) return;
-    const id = Number(e.target.closest('tr').dataset.id);
-    const ids = state.selected.has(id) && state.selected.size > 1 ? selectedIds() : [id];
+    const tr = e.target.closest('tr');
+    const mine = rowIds(tr).filter((id) => !tr.dataset.group || state.snap.items.find((it) => it.id === id).status !== 'complete');
+    const ids = mine.every((id) => state.selected.has(id)) && state.selected.size > mine.length ? selectedIds() : mine;
     await act(e.target.checked ? 'activate' : 'deactivate', ids);
   });
   $('#allActive').addEventListener('change', async (e) => {
@@ -679,7 +868,7 @@
     if (!items.length) return;
     const cat = (state.snap.categories || []).find((c) => c.id === catId);
     const target = cat ? '“' + cat.name + '”' : 'no category';
-    const hasFiles = items.some((it) => it.bytes > 0 || it.status === 'complete' || it.m3u8);
+    const hasFiles = items.some((it) => it.bytes > 0 || it.status === 'complete');
     const what = plural(items.length, 'row');
     const ok = hasFiles
       ? await confirmDialog('Change category to ' + target + '?',
@@ -691,32 +880,14 @@
     if (ok) act('setcategory', items.map((it) => it.id), { category: catId });
   }
 
-  // ---------- find links on a page ----------
-  const scanDlg = $('#scanDlg');
-  $('#scanBtn').addEventListener('click', () => { scanDlg.showModal(); $('#scanUrl').focus(); });
-  $('#scanCancel').addEventListener('click', () => scanDlg.close());
-  $('#scanForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const url = $('#scanUrl').value.trim();
-    if (!url) return;
-    const go = $('#scanGo');
-    go.disabled = true; go.textContent = 'Searching…';
-    try {
-      const res = await api('scan', { url });
-      const urls = res.urls || [];
-      if (urls.length === 0) {
-        toast('No video links were found on that page.', 'warn');
-      } else {
-        const box = $('#urlInput');
-        box.value = (box.value.trim() ? box.value.trim() + '\n' : '') + urls.join('\n');
-        toast('Found ' + plural(urls.length, 'link') + '. Check them, then press Add to list.', 'ok');
-        scanDlg.close();
-      }
-    } catch (err) {
-      toast(err.message, 'error', 9000);
-    } finally {
-      go.disabled = false; go.textContent = 'Find links';
-    }
+  // ---------- Search Names: filter the list by name as you type ----------
+  const nameSearch = $('#nameSearch');
+  nameSearch.addEventListener('input', () => {
+    state.search = nameSearch.value.trim().toLowerCase();
+    if (state.snap) { renderTable(); paintSelection(); } // rows filtered out are deselected
+  });
+  nameSearch.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && nameSearch.value) { e.stopPropagation(); nameSearch.value = ''; nameSearch.dispatchEvent(new Event('input')); }
   });
 
   // ---------- context menu ----------
@@ -725,6 +896,7 @@
     ['Start', 'start'], ['Pause', 'pause'], ['Force start', 'forcestart'], '-',
     ['Set active', 'activate'], ['Set inactive', 'deactivate'], '-',
     ['Move to top', 'top'], ['Move up', 'up'], ['Move down', 'down'], ['Move to bottom', 'bottom'], '-',
+    ['Reset server', 'resetserver'], '-', // Set category goes in before the rule above Get playlist
     ['Get playlist (.m3u8)', 'm3u8'], ['Copy link', 'copy'], ['Copy extended link', 'copyext'], ['Show file in folder', 'reveal'], ['Open Done folder', 'opendone'], '-',
     ['Remove…', 'remove', 'danger'],
   ];
@@ -837,20 +1009,18 @@
   // askDialog shows the shared question box. With checkLabel it also shows a tick
   // box that starts off; the answer is { ok, checked }. okChecked, when given,
   // is the label of the OK button while the box is ticked.
-  function askDialog(title, text, okLabel, checkLabel, okChecked, silentLabel) {
+  function askDialog(title, text, okLabel, checkLabel, okChecked) {
     return new Promise((resolve) => {
       const dlg = $('#confirmDlg');
       const box = $('#confirmCheck');
       $('#confirmTitle').textContent = title;
       $('#confirmText').textContent = text;
       $('#confirmOk').textContent = okLabel;
-      $('#confirmSilent').hidden = !silentLabel;
-      $('#confirmSilent').textContent = silentLabel || '';
       box.checked = false;
       $('#confirmCheckRow').hidden = !checkLabel;
       $('#confirmCheckText').textContent = checkLabel || '';
       box.onchange = () => { $('#confirmOk').textContent = box.checked && okChecked ? okChecked : okLabel; };
-      dlg.addEventListener('close', () => resolve({ ok: dlg.returnValue === 'ok', silent: dlg.returnValue === 'silent', checked: !!checkLabel && box.checked }), { once: true });
+      dlg.addEventListener('close', () => resolve({ ok: dlg.returnValue === 'ok', checked: !!checkLabel && box.checked }), { once: true });
       dlg.returnValue = 'cancel';
       dlg.showModal();
     });
@@ -875,21 +1045,21 @@
     if (typing(e) || !$('#settingsPage').hidden || document.querySelector('dialog[open]')) return;
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
       e.preventDefault();
-      orderedIds().forEach((id) => state.selected.add(id));
+      viewIds().forEach((id) => state.selected.add(id)); // what is shown (Search Names)
       paintSelection();
     } else if (e.key === 'Delete') {
       const ids = selectedIds();
       if (ids.length) removeRows(ids);
     } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      const ids = viewIds();
-      if (!ids.length) return;
+      const list = shownEntries(); // a closed group is one step
+      if (!list.length) return;
       e.preventDefault();
-      const cur = state.anchor != null ? ids.indexOf(state.anchor) : -1;
-      const next = Math.max(0, Math.min(ids.length - 1, cur + (e.key === 'ArrowDown' ? 1 : -1)));
-      state.selected.clear(); state.selected.add(ids[next]); state.anchor = ids[next];
+      const cur = state.anchor != null ? list.findIndex((en) => en.ids.length === 1 ? en.ids[0] === state.anchor : en.ids[0] === state.anchor && en.ids.every((id) => state.selected.has(id))) : -1;
+      const at = cur >= 0 ? cur : list.findIndex((en) => en.ids.includes(state.anchor));
+      const next = list[Math.max(0, Math.min(list.length - 1, at + (e.key === 'ArrowDown' ? 1 : -1)))];
+      state.selected.clear(); next.ids.forEach((id) => state.selected.add(id)); state.anchor = next.ids[0];
       paintSelection();
-      const r = rows.get(ids[next]);
-      if (r) r.tr.scrollIntoView({ block: 'nearest' });
+      next.tr.scrollIntoView({ block: 'nearest' });
     }
   });
 
@@ -926,6 +1096,7 @@
     renderTable();
     paintSelection();
     paintMode(snap.mode);
+    $('#expandGroups').hidden = !snap.groupSplit;
     renderCategorySelect(snap.categories || []);
     renderStatus(snap);
     showNotices(snap);
@@ -987,7 +1158,7 @@
     done: $('#setDone'), inc: $('#setIncomplete'), m3u8: $('#setM3U8'),
     dataDir: $('#setDataDir'),
     parallel: $('#setParallel'), res: $('#setRes'),
-    bottomFirst: $('#setBottomFirst'), firstPieces: $('#setFirstPieces'), uniqueServer: $('#setUniqueServer'), serverRetries: $('#setServerRetries'), serverWait: $('#setServerWait'), deepSearch: $('#setDeepSearch'), deepPositions: $('#setDeepPositions'), longLasting: $('#setLongLasting'), skipRefused: $('#setSkipRefused'), silentReplace: $('#setSilentReplace'), convertMp4: $('#setConvertMp4'), ffmpegDir: $('#setFFmpegDir'), folderRedirect: $('#setFolderRedirect'), deleteAfterConvert: $('#setDeleteAfterConvert'), autoStart: $('#setAutoStart'), autoResume: $('#setAutoResume'),
+    firstPieces: $('#setFirstPieces'), uniqueServers: $('#setUniqueServers'), uniqueWait: $('#setUniqueWait'), groupSplit: $('#setGroupSplit'), convertMp4: $('#setConvertMp4'), ffmpegDir: $('#setFFmpegDir'), folderRedirect: $('#setFolderRedirect'), deleteAfterConvert: $('#setDeleteAfterConvert'), autoStart: $('#setAutoStart'),
     listenOn: $('#setListenOn'), listenFile: $('#setListenFile'), listenArchive: $('#setListenArchive'), listenBackups: $('#setListenBackups'), listenPat: $('#setListenPatterns'), listenSkip: $('#setListenSkip'), listenPrivate: $('#setListenPrivate'),
   };
 
@@ -1004,19 +1175,16 @@
   F.listenArchive.addEventListener('change', syncArchive);
   F.listenBackups.addEventListener('change', () => { backupsWanted = F.listenBackups.checked; });
 
-  // Deep Search needs Unique Server Find, and its positions need Deep Search.
+  // Delete After Conversion needs Convert to MP4.
   function syncExperimental() {
-    if (!F.uniqueServer.checked) F.deepSearch.checked = false;
-    F.deepSearch.disabled = !F.uniqueServer.checked;
-    F.deepPositions.disabled = !F.deepSearch.checked;
     if (!F.convertMp4.checked) F.deleteAfterConvert.checked = false;
     F.deleteAfterConvert.disabled = !F.convertMp4.checked;
   }
   F.convertMp4.addEventListener('change', syncExperimental);
-  F.uniqueServer.addEventListener('change', syncExperimental);
-  F.deepSearch.addEventListener('change', syncExperimental);
 
   function fillSettings(s) {
+    fillStatusOrder(s.statusOrder);
+    F.groupSplit.checked = !!s.groupSplit;
     F.ua.value = s.userAgent || '';
     F.cookie.value = s.cookie || '';
     F.done.value = s.doneDir || '';
@@ -1026,25 +1194,16 @@
     renderCategoryEditor(s.categories || []);
     F.parallel.value = s.maxParallel || 0;
     F.res.value = s.maxResolution || 0;
-    F.bottomFirst.checked = !!s.addBottomFirst;
     F.firstPieces.checked = !!s.firstPieces;
-    F.uniqueServer.checked = !!s.uniqueServer;
-    F.serverRetries.value = s.serverRetries || 10;
-    F.serverWait.value = s.serverWait || 1;
-    F.deepSearch.checked = !!s.deepSearch;
-    F.deepPositions.value = s.deepPositions || 2;
-    F.longLasting.checked = !!s.longLasting;
-    F.skipRefused.checked = !!s.skipRefused;
-    F.silentReplace.checked = !!s.silentReplace;
+    F.uniqueServers.checked = !!s.uniqueServers;
+    F.uniqueWait.value = s.uniqueWait || 1;
     F.convertMp4.checked = !!s.convertMp4;
     F.ffmpegDir.value = s.ffmpegDir || '';
     F.folderRedirect.replaceChildren(new Option('No Category', ''), ...(s.categories || []).map((c) => new Option(c.name, c.id)));
     F.folderRedirect.value = s.folderRedirect || '';
     F.deleteAfterConvert.checked = !!s.deleteAfterConvert;
-    syncSilentButton();
     syncExperimental();
     F.autoStart.checked = !!s.autoStart;
-    F.autoResume.checked = !!s.autoResume;
     const L = s.listen || {};
     F.listenOn.checked = !!L.enabled;
     F.listenFile.value = L.file || '';
@@ -1067,11 +1226,58 @@
       dataDir: F.dataDir.value,
       categories: readCategoryEditor(),
       maxParallel: parseInt(F.parallel.value, 10) || 0, maxResolution: parseInt(F.res.value, 10) || 0,
-      addBottomFirst: F.bottomFirst.checked, firstPieces: F.firstPieces.checked, uniqueServer: F.uniqueServer.checked, serverRetries: parseInt(F.serverRetries.value, 10) || 10, serverWait: parseFloat(F.serverWait.value) || 1, deepSearch: F.deepSearch.checked && F.uniqueServer.checked, deepPositions: parseInt(F.deepPositions.value, 10) || 2, longLasting: F.longLasting.checked, skipRefused: F.skipRefused.checked, forceNameSort: state.settings ? state.settings.forceNameSort || '' : '', silentReplace: F.silentReplace.checked, convertMp4: F.convertMp4.checked, ffmpegDir: F.ffmpegDir.value.trim(), folderRedirect: F.folderRedirect.value, deleteAfterConvert: F.deleteAfterConvert.checked, autoStart: F.autoStart.checked, autoResume: F.autoResume.checked,
+      firstPieces: F.firstPieces.checked, uniqueServers: F.uniqueServers.checked, uniqueWait: parseFloat(F.uniqueWait.value) || 1, forceNameSort: state.settings ? state.settings.forceNameSort || '' : '', convertMp4: F.convertMp4.checked, ffmpegDir: F.ffmpegDir.value.trim(), folderRedirect: F.folderRedirect.value, deleteAfterConvert: F.deleteAfterConvert.checked, autoStart: F.autoStart.checked,
       listen: { enabled: F.listenOn.checked, file: F.listenFile.value, noArchive: !F.listenArchive.checked, noBackups: !backupsWanted, patterns: F.listenPat.value.split('\n'), skipDuplicates: F.listenSkip.checked, allowPrivate: F.listenPrivate.checked },
       theme, mode: state.settings ? state.settings.mode : 'hybrid',
+      statusOrder: $$('#statusOrder .sbox').map((b) => b.dataset.key), groupSplit: F.groupSplit.checked,
     };
   }
+
+  // ---------- Status sort order (settings page): boxes dragged left to right ----------
+  const sorder = $('#statusOrder');
+  function fillStatusOrder(order) {
+    const keys = (order && order.length ? order : Object.keys(STATUS_BOXES)).filter((k) => STATUS_BOXES[k]);
+    sorder.textContent = '';
+    for (const k of keys) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'sbox'; b.draggable = true; b.dataset.key = k;
+      b.textContent = STATUS_BOXES[k]; b.setAttribute('role', 'listitem');
+      sorder.appendChild(b);
+    }
+  }
+  let dragBox = null;
+  sorder.addEventListener('dragstart', (e) => {
+    dragBox = e.target.closest('.sbox');
+    if (!dragBox) return;
+    dragBox.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', dragBox.dataset.key);
+  });
+  sorder.addEventListener('dragover', (e) => {
+    if (!dragBox) return;
+    e.preventDefault();
+    const over = e.target.closest('.sbox');
+    if (!over || over === dragBox) return;
+    const r = over.getBoundingClientRect();
+    sorder.insertBefore(dragBox, e.clientX < r.left + r.width / 2 ? over : over.nextSibling);
+  });
+  sorder.addEventListener('drop', (e) => e.preventDefault());
+  sorder.addEventListener('dragend', () => {
+    if (!dragBox) return;
+    dragBox.classList.remove('dragging');
+    dragBox = null;
+    setDirty(true);
+  });
+  sorder.addEventListener('keydown', (e) => {
+    const b = e.target.closest('.sbox');
+    if (!b || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return;
+    e.preventDefault();
+    if (e.key === 'ArrowLeft' && b.previousElementSibling) sorder.insertBefore(b, b.previousElementSibling);
+    else if (e.key === 'ArrowRight' && b.nextElementSibling) sorder.insertBefore(b.nextElementSibling, b);
+    else return;
+    b.focus();
+    setDirty(true);
+  });
 
   function setDirty(d) {
     state.settingsDirty = d;
@@ -1173,28 +1379,19 @@
     page.hidden = true;
     setDirty(false);
   }
-  // A different cookie is only saved after asking (already asked: asked = true).
+  // A different cookie is only saved after asking.
   // If the answer is No nothing is saved and the page stays as it is.
-  async function saveSettings(asked) {
+  async function saveSettings() {
     const next = readSettings();
     const had = state.settings ? (state.settings.cookie || '').trim() : '';
     const changed = had !== '' && next.cookie.trim() !== had; // the first cookie replaces nothing
-    let silent = false;
-    if (changed && asked !== true) {
-      const choice = await cookieDialog(next.cookie.trim().length);
-      if (!choice) return;
-      silent = choice === 'silent';
-      if (silent) {
-        try { await api('cookie', { cookie: next.cookie.trim(), silent: true }); } catch (err) { toast(err.message, 'error'); return; }
-      }
-    }
-    const paused = changed && !silent ? runningCount() : 0;
+    if (changed && !(await cookieDialog(next.cookie.trim().length))) return;
     try {
       state.settings = await api('settings', next, 'PUT');
       fillSettings(state.settings);
       applyTheme(state.settings.theme);
       $('#savedNote').textContent = 'Settings saved.';
-      if (changed) cookieToast(paused, next.cookie.trim().length);
+      if (changed) cookieToast(next.cookie.trim().length);
       refresh();
     } catch (err) { toast(err.message, 'error'); }
   }
@@ -1267,80 +1464,36 @@
   }
   // The question asked before any cookie is replaced (main window and Settings).
   function cookieQuestion(len) {
-    return 'The saved cookie will be replaced with the text you last copied (' + len + ' characters). Downloads that are running or waiting will be paused. They will stay paused until they are started manually.';
+    return 'The saved cookie will be replaced with the new one (' + len + ' characters). Downloads keep going and use it from their next request.';
   }
-  // Silent Replace is offered only while the Experimental tick box is on (as saved).
-  async function silentOn() {
-    if (!state.settings) { try { state.settings = await api('settings'); } catch (_) { return false; } }
-    return !!state.settings.silentReplace;
-  }
-  // Asks before a cookie is replaced; answers 'replace', 'silent' or '' (cancelled).
+  // Asks before a cookie is replaced; true to go ahead.
   async function cookieDialog(len) {
-    const r = await askDialog('Replace the cookie?', cookieQuestion(len), 'Replace cookie', null, null, (await silentOn()) ? 'Silent Replace' : '');
-    return r.silent ? 'silent' : r.ok ? 'replace' : '';
+    return (await askDialog('Replace the cookie?', cookieQuestion(len), 'Replace cookie')).ok;
   }
-  // Replaces the cookie without pausing anything; the Settings page, if open, shows the new one.
-  async function silentReplace(cookie) {
+  // Replaces the cookie (nothing is paused); the Settings page, if open, shows the new one.
+  async function replaceCookie(cookie) {
     try {
-      await api('cookie', { cookie, silent: true });
+      await api('cookie', { cookie });
       state.settings = await api('settings');
       F.cookie.value = state.settings.cookie || '';
-      cookieToast(0, cookie.length);
+      cookieToast(cookie.length);
       refresh();
     } catch (err) { toast(err.message, 'error', 7000); }
   }
-  function syncSilentButton() { $('#silentCookie').hidden = !F.silentReplace.checked; }
-  function cookieToast(paused, len) {
-    toast(paused ? 'Downloads Paused to Replace Cookies' : 'Cookie replaced (' + len + ' characters).', 'ok');
-  }
-  function runningCount() {
-    const items = state.snap ? state.snap.items : [];
-    return items.filter((it) => it.status === 'queued' || it.status === 'resolving' || it.status === 'downloading').length;
-  }
-  // Replace cookie on the main window: ask first, then save the copied text as the cookie.
-  $('#cookieBtn').addEventListener('click', async () => {
+  function cookieToast(len) { toast('Cookie replaced (' + len + ' characters).', 'ok'); }
+  // Replace cookie (main window and Settings): ask, then save the copied text as the cookie.
+  async function replaceFromClipboard(settingsOpen) {
     const { text, why } = await clipboardText();
     if (!text) {
-      toast('Nothing to replace the cookie with. ' + (why ? why + ' ' : 'The clipboard has no text. ') + 'Copy the cookie first, then press this button again.', 'warn', 8000);
+      if (settingsOpen) F.cookie.focus();
+      toast('Nothing to replace the cookie with. ' + (why ? why + ' ' : 'The clipboard has no text. ') + 'Copy the cookie first, then press Replace cookie again' + (settingsOpen ? ', or press Ctrl+V in the box.' : '.'), 'warn', 8000);
       return;
     }
     const cookie = text.replace(/\s*[\r\n]+\s*/g, ' ');
-    const choice = await cookieDialog(cookie.length);
-    if (!choice) return;
-    try {
-      const res = await api('cookie', { cookie, silent: choice === 'silent' });
-      state.settings = null; // re-read the next time settings open
-      cookieToast(res.paused || 0, cookie.length);
-      refresh();
-    } catch (err) { toast(err.message, 'error', 7000); }
-  });
-  // Replace cookie in Settings: take what is on the clipboard, ask, then save the settings with it.
-  $('#replaceCookie').addEventListener('click', async () => {
-    const { text, why } = await clipboardText();
-    if (!text) {
-      F.cookie.focus();
-      toast('Nothing to replace the cookie with. ' + (why ? why + ' ' : 'The clipboard has no text. ') + 'Copy the cookie and press Replace cookie again, or press Ctrl+V in the box.', 'warn', 8000);
-      return;
-    }
-    const cookie = text.replace(/\s*[\r\n]+\s*/g, ' ');
-    const choice = await cookieDialog(cookie.length);
-    if (!choice) return;
-    if (choice === 'silent') { silentReplace(cookie); return; }
-    F.cookie.value = cookie;
-    setDirty(true);
-    saveSettings(true);
-  });
-  // Silent Replace in Settings: take what is on the clipboard and replace the cookie, no questions, nothing paused.
-  $('#silentCookie').addEventListener('click', async () => {
-    const { text, why } = await clipboardText();
-    if (!text) {
-      F.cookie.focus();
-      toast('Nothing to replace the cookie with. ' + (why ? why + ' ' : 'The clipboard has no text. ') + 'Copy the cookie and press Silent Replace again, or press Ctrl+V in the box.', 'warn', 8000);
-      return;
-    }
-    silentReplace(text.replace(/\s*[\r\n]+\s*/g, ' '));
-  });
-  F.silentReplace.addEventListener('change', syncSilentButton);
+    if (await cookieDialog(cookie.length)) replaceCookie(cookie);
+  }
+  $('#cookieBtn').addEventListener('click', () => replaceFromClipboard(false));
+  $('#replaceCookie').addEventListener('click', () => replaceFromClipboard(true));
   $$('[data-browse]').forEach((b) => b.addEventListener('click', async () => {
     const field = $('#' + b.dataset.browse);
     b.disabled = true;
@@ -1355,8 +1508,18 @@
   // ---------- live updates ----------
   function connect() {
     const es = new EventSource('/api/events');
+    let base = null; // the stream's own last snapshot: changed rows go on top of it, not on one /api/state gave
     es.onmessage = (e) => {
-      try { apply(JSON.parse(e.data)); } catch (err) { console.error(err); }
+      try {
+        const snap = JSON.parse(e.data);
+        if (!snap.items) { // only the rows that changed (every message after the first)
+          const byId = new Map(base.items.map((it) => [it.id, it]));
+          snap.changed.forEach((it) => byId.set(it.id, it));
+          snap.items = (snap.order || base.items.map((it) => it.id)).map((id) => byId.get(id));
+        }
+        base = snap;
+        apply(snap);
+      } catch (err) { console.error(err); }
     };
     es.onerror = () => {
       // the browser reconnects by itself; if the program is gone say so

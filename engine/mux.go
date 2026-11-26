@@ -23,15 +23,7 @@ type MuxJob struct {
 	Imported   bool       // continuation of a previous run
 	ResumeSize int64      // size the file had at Offset, <0 if unknown
 	Path       string     // .ts file to write
-	// Expires is when the segment links stop working (zero = unknown). The
-	// download hands back ErrExpired a little before that so the playlist can
-	// be read again while the old links still work, instead of running into
-	// 403 / 410 answers.
-	Expires time.Time
 }
-
-// ExpiryLead is how long before the links expire the playlist is refreshed.
-var ExpiryLead = time.Minute
 
 // Progress is reported after every segment.
 type Progress struct {
@@ -134,10 +126,6 @@ func Mux(env *Env, job MuxJob, onProgress func(Progress)) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if !job.Expires.IsZero() && time.Now().Add(ExpiryLead).After(job.Expires) {
-			env.warn("links are about to expire, refreshing playlist")
-			return fmt.Errorf("%w (links about to expire)", ErrExpired)
-		}
 		startTime := time.Now()
 		if err := muxDownloadLoop(env, &data, pl.List[i], 10, 5); err != nil {
 			return err
@@ -171,16 +159,12 @@ func Mux(env *Env, job MuxJob, onProgress func(Progress)) error {
 
 // download retry loop for Mux()
 //
-// As in the original: 5 retries, 429 is asked again, 410 gives up at once.
-// Added: a 403 / 401 gets one more try and then ErrDenied (expired signed
-// link or a block: the caller reads the playlist again), and 429 backs off
-// instead of asking every 100 ms for as long as it takes, which only gets the
-// client blocked.
+// As in the original: 5 retries 1 s apart (a 403 too), a request that got no
+// answer adds 30 s to the timeout, 429 is asked again every 100 ms for as long
+// as it takes, 410 gives up at once.
 func muxDownloadLoop(env *Env, data *[]byte, url string, timeout, maxRetry int) (err error) {
 	ctx := env.ctx()
 	retry := 0
-	limited := 0
-	backoff := 100 * time.Millisecond
 	for {
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
@@ -194,22 +178,11 @@ func muxDownloadLoop(env *Env, data *[]byte, url string, timeout, maxRetry int) 
 			return cerr
 		}
 		if status == 429 {
-			limited++
-			if limited > 40 {
-				return fmt.Errorf("%w (%v)", ErrDenied, &StatusError{Code: status, Body: string(*data)})
-			}
-			tools.Sleep(ctx, backoff)
-			if backoff < 10*time.Second {
-				backoff *= 2
-			}
+			tools.Sleep(ctx, 100*time.Millisecond)
 			continue
 		}
-		denied := err == nil && (status == 403 || status == 401)
 		if status == 410 {
 			env.warn("download expired")
-			retry = maxRetry
-		}
-		if denied && retry >= 1 {
 			retry = maxRetry
 		}
 		retry++
@@ -219,11 +192,8 @@ func muxDownloadLoop(env *Env, data *[]byte, url string, timeout, maxRetry int) 
 			timeout += 30
 		}
 		if retry > maxRetry {
-			switch {
-			case status == 410:
+			if status == 410 {
 				return fmt.Errorf("%w (%v)", ErrExpired, err)
-			case denied:
-				return fmt.Errorf("%w (%v)", ErrDenied, err)
 			}
 			return
 		}

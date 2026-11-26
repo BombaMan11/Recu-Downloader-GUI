@@ -20,15 +20,16 @@ import (
 
 // Manager is the download table and everything that acts on it.
 type Manager struct {
-	mu       sync.Mutex
-	baseDir  string
-	loc      appdata.Locations // where settings.json, queue.json and the log live
-	settings Settings
-	items    []*Item
-	nextID   int64
-	notices  []Notice
-	noticeID int64
-	tag      string
+	mu         sync.Mutex
+	baseDir    string
+	loc        appdata.Locations // where settings.json, queue.json and the log live
+	settings   Settings
+	items      []*Item
+	nextID     int64
+	uniquePass bool // Unique servers: a pass is running (see uniqueservers.go)
+	notices    []Notice
+	noticeID   int64
+	tag        string
 
 	rootCtx    context.Context
 	rootCancel context.CancelFunc
@@ -36,7 +37,8 @@ type Manager struct {
 	kickCh     chan struct{}
 	version    uint64
 	dirty      bool
-	resolveSem chan struct{}
+	resolving  int                        // page reads running now (acquireResolve)
+	savedLinks map[int64]*engine.Resolved // each row's links as written to its .m3u8 (savePlaylistsLocked)
 	shutdown   bool
 	convertQ   []*Item       // finished videos waiting to be converted to mp4
 	convertCh  chan struct{} // wakes convertLoop
@@ -60,7 +62,6 @@ func New(baseDir, tag string) (*Manager, error) {
 		loc:         appdata.Load(baseDir),
 		tag:         tag,
 		kickCh:      make(chan struct{}, 1),
-		resolveSem:  make(chan struct{}, 2),
 		convertCh:   make(chan struct{}, 1),
 		version:     1,
 		listenEvery: listenEvery,
@@ -81,6 +82,7 @@ func New(baseDir, tag string) (*Manager, error) {
 	if err := m.loadQueue(); err != nil {
 		return nil, fmt.Errorf("queue.json: %v", err)
 	}
+	m.loadPlaylistsLocked()
 	if err := m.ensureDirsLocked(); err != nil {
 		m.notifyLocked("error", err.Error())
 	}
@@ -117,6 +119,7 @@ func (m *Manager) Shutdown() {
 	m.wg.Wait()
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.savePlaylistsLocked() // first: it records where each .m3u8 is, in the queue
 	m.saveQueueLocked()
 }
 
@@ -319,27 +322,11 @@ func (m *Manager) Settings() Settings {
 // When the data folder changes, settings.json, queue.json and the log are
 // moved there. Nothing is changed if that can not be done (for example the
 // new folder is read-only or already holds a settings.json / queue.json).
+// A new cookie is used from the next request; nothing is paused.
 func (m *Manager) SetSettings(s Settings) error {
-	_, err := m.setSettings(s)
-	return err
-}
-
-// setSettings is SetSettings; it also reports how many downloads were paused
-// because the cookie changed. They are not started again: the user does that.
-func (m *Manager) setSettings(s Settings) (int, error) { return m.applySettings(s, true) }
-
-// applySettings is setSettings; pause false keeps the list running when the
-// cookie changes (Silent Replace).
-func (m *Manager) applySettings(s Settings, pause bool) (int, error) {
 	s.normalize()
 	if err := s.Listen.validate(); err != nil {
-		return 0, err
-	}
-	// A new cookie is never swapped in under downloads that are running: they are
-	// paused first, like Pause all. The user starts them again.
-	paused := 0
-	if pause {
-		paused = m.pauseForNewCookie(s.Cookie)
+		return err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -347,7 +334,7 @@ func (m *Manager) applySettings(s Settings, pause bool) (int, error) {
 	s.ColumnWidths = m.settings.ColumnWidths // only /api/columns changes these
 
 	if err := m.relocateLocked(s.DataDir, s); err != nil {
-		return 0, err
+		return err
 	}
 	s = m.withLocations(s) // what is really in effect (and in the pointer file)
 	m.settings = s
@@ -368,33 +355,20 @@ func (m *Manager) applySettings(s Settings, pause bool) (int, error) {
 	}
 	m.changedLocked(false)
 	m.kick()
-	return paused, err
+	return err
 }
 
 // maxCookie is the longest cookie that is accepted (a real one is a few KB).
 const maxCookie = 64 << 10
 
-// SetCookie replaces the saved cookie and nothing else. Downloads that are
-// running or waiting are paused first, as if you had pressed Pause all, so none
-// of them carries on with the old cookie. They stay paused until the user
-// starts them. It returns how many were paused.
-func (m *Manager) SetCookie(cookie string) (int, error) {
-	s, err := m.withCookie(cookie)
-	if err != nil {
-		return 0, err
-	}
-	return m.setSettings(s)
-}
-
-// SetCookieSilently replaces the saved cookie like SetCookie, but nothing is
-// paused: the list carries on and the new cookie is used from the next request.
-func (m *Manager) SetCookieSilently(cookie string) error {
+// SetCookie replaces the saved cookie and nothing else. Nothing is paused: the
+// list carries on and the new cookie is used from the next request.
+func (m *Manager) SetCookie(cookie string) error {
 	s, err := m.withCookie(cookie)
 	if err != nil {
 		return err
 	}
-	_, err = m.applySettings(s, false)
-	return err
+	return m.SetSettings(s)
 }
 
 func (m *Manager) withCookie(cookie string) (Settings, error) {
@@ -408,58 +382,6 @@ func (m *Manager) withCookie(cookie string) (Settings, error) {
 	s := m.Settings()
 	s.Cookie = cookie
 	return s, nil
-}
-
-// cookieStopWait is the longest a cookie change waits for paused downloads to wind down.
-const cookieStopWait = 15 * time.Second
-
-// pauseForNewCookie is called before settings with a different cookie are
-// saved. The rows that are running, resolving or waiting for their turn are
-// paused and the call returns once their workers have stopped. It returns how
-// many rows were paused (0 when the cookie is the same, is the first one, or nothing was going).
-func (m *Manager) pauseForNewCookie(newCookie string) int {
-	m.mu.Lock()
-	if newCookie == m.settings.Cookie || strings.TrimSpace(m.settings.Cookie) == "" {
-		m.mu.Unlock()
-		return 0 // same cookie, or the first one: nothing is using an old cookie
-	}
-	var live []int64
-	for _, it := range m.items {
-		switch it.Status {
-		case StatusQueued, StatusResolving, StatusDownloading:
-			live = append(live, it.ID)
-			m.pauseLocked(it)
-		}
-	}
-	if len(live) == 0 {
-		m.mu.Unlock()
-		return 0
-	}
-	m.changedLocked(true)
-	m.kick()
-	m.mu.Unlock()
-
-	deadline := time.Now().Add(cookieStopWait)
-	for time.Now().Before(deadline) && m.anyBusy(live) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	return len(live)
-}
-
-// anyBusy reports whether a worker is still winding down on one of the rows.
-func (m *Manager) anyBusy(ids []int64) bool {
-	set := make(map[int64]bool, len(ids))
-	for _, id := range ids {
-		set[id] = true
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, it := range m.items {
-		if set[it.ID] && it.busy {
-			return true
-		}
-	}
-	return false
 }
 
 // relocateLocked moves settings.json, queue.json and the log into a new data
@@ -513,7 +435,8 @@ func (m *Manager) relocateLocked(newData string, s Settings) error {
 		undo()
 		return fmt.Errorf("could not save %s next to the program: %v", appdata.FileName, err)
 	}
-	// committed: remove the old copies
+	// committed: remove the old copies; the playlists are written again in the new folders
+	m.savedLinks = nil
 	os.Remove(oldSettings)
 	os.Remove(oldQueue)
 	if err := applog.Move(dir); err != nil {
@@ -571,11 +494,6 @@ func (m *Manager) AddTo(text, category string) (added int, problems []string) {
 	if m.settings.category(category) == nil {
 		category = ""
 	}
-	if m.settings.BottomFirst { // the bottom line of what was added becomes its first row
-		for i, j := 0, len(entries)-1; i < j; i, j = i+1, j-1 {
-			entries[i], entries[j] = entries[j], entries[i]
-		}
-	}
 	for _, e := range entries {
 		if m.hasLocked(e) {
 			problems = append(problems, "already in the list: "+tools.ShortenString(e.URL, 70))
@@ -594,6 +512,7 @@ func (m *Manager) AddTo(text, category string) (added int, problems []string) {
 		} else {
 			it.Status = StatusPaused
 		}
+		it.held = true // its playlist is read and checked before it may start (see readUnique)
 		m.items = append(m.items, it)
 		added++
 	}
@@ -627,28 +546,18 @@ func (m *Manager) hasLocked(e Entry) bool {
 	return false
 }
 
-// ScanPage lists the video links found on a page (the old "parse" command).
-func (m *Manager) ScanPage(pageURL string) ([]string, error) {
-	m.mu.Lock()
-	hdr := m.settings.headers()
-	m.mu.Unlock()
-	return engine.ScanPage(&engine.Env{Ctx: m.rootCtx, Header: hdr}, pageURL)
-}
-
 // ---- start / pause ----
 
-// Start makes the rows eligible: the scheduler starts them according to the mode.
-// Each row that is not running first forgets its server and has its playlist
-// read again (only its own: the site can hand out a different server on a
-// later visit), also when it is simply resumed after a pause.
+// Start makes the rows eligible: the scheduler starts them according to the mode,
+// once they have new playlists (see renewLocked).
 func (m *Manager) Start(ids []int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, it := range m.selectedLocked(ids) {
-		m.forgetServerLocked(it) // starting a row looks its server up again
-		it.preWait, it.preBlocks = time.Time{}, 0
+		m.renewLocked(it)
+		it.readFailed = false
 		stopLookupLocked(it)
-		if it.Status == StatusPaused || it.Status == StatusError || it.Status == StatusSkipped {
+		if it.Status == StatusPaused || it.Status == StatusError {
 			it.Status = StatusQueued
 			it.Error = ""
 		}
@@ -675,6 +584,7 @@ func (m *Manager) pauseLocked(it *Item) {
 	}
 	it.Forced = false
 	it.Prime = false // the person took over: no first pieces for this row
+	it.held = false
 	if it.cancel != nil {
 		it.cancel()
 	}
@@ -707,10 +617,10 @@ func (m *Manager) ForceStart(ids []int64) (skippedInactive int) {
 			continue
 		}
 		it.Forced = true
-		m.forgetServerLocked(it)
-		it.preWait, it.preBlocks = time.Time{}, 0
+		m.renewLocked(it)
+		it.readFailed = false
 		stopLookupLocked(it)
-		if it.Status == StatusPaused || it.Status == StatusError || it.Status == StatusSkipped {
+		if it.Status == StatusPaused || it.Status == StatusError {
 			it.Status = StatusQueued
 			it.Error = ""
 		}
@@ -727,30 +637,42 @@ func (m *Manager) ForceStartAll() (skippedInactive int) {
 	return m.ForceStart(ids)
 }
 
-// StartAll starts every unfinished row. First it forgets which server each
-// waiting or paused row was last seen on and re-reads its playlist, because the
-// site can hand out a different server on a later visit (for example after the
-// program was closed and opened again). Only the playlists are read, in table
-// order and a couple at a time; nothing is downloaded until that is known, and
-// then rows start in the normal order for the current mode.
+// StartAll starts every unfinished row, like Start on all of them.
 func (m *Manager) StartAll() {
 	m.mu.Lock()
 	ids := m.allIDsLocked(func(it *Item) bool { return it.Status != StatusComplete })
 	m.mu.Unlock()
-	m.Start(ids) // Start looks the servers up again
+	m.Start(ids)
 }
 
-// forgetServerLocked drops what is known about a row's server so the next
-// start looks it up again. Rows that are running keep their server. A row that
-// is only still winding down from a pause (busy, but no longer running) forgets it.
-func (m *Manager) forgetServerLocked(it *Item) {
-	if it.Status == StatusResolving || it.Status == StatusDownloading || it.Status == StatusComplete {
+// renewLocked: Start, Start all and Force start read a new playlist for a row
+// that is not downloading, like the original read every page on each run. The
+// row is held until its new playlist is read and its server checked (see
+// readUnique). Rows that are running (or still winding down) keep theirs.
+func (m *Manager) renewLocked(it *Item) {
+	if it.busy || it.Status == StatusResolving || it.Status == StatusDownloading || it.Status == StatusComplete {
 		return
 	}
-	it.res = nil
-	if Mode(m.settings.Mode) == ModeHybrid {
-		it.Server = ""
+	it.res, it.Server, it.held = nil, "", true
+}
+
+// ResetServer makes the selected rows forget their server and links (their
+// .m3u8 goes too), so their page is read again for a server.
+// Rows that are downloading, reading or finished are left alone. It returns how many rows were reset.
+func (m *Manager) ResetServer(ids []int64) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, it := range m.selectedLocked(ids) {
+		if it.busy || it.Status == StatusResolving || it.Status == StatusDownloading || it.Status == StatusComplete {
+			continue
+		}
+		it.res, it.Server = nil, ""
+		n++
 	}
+	m.changedLocked(true)
+	m.kick()
+	return n
 }
 
 func (m *Manager) PauseAll() {
@@ -902,7 +824,8 @@ func (m *Manager) Remove(ids []int64, deleteFiles bool) {
 // ClearCompleted removes the finished rows (the videos stay in Done).
 func (m *Manager) ClearCompleted() {
 	m.mu.Lock()
-	ids := m.allIDsLocked(func(it *Item) bool { return it.Status == StatusComplete })
+	// rows converting to MP4 (or waiting to) stay: removing one throws its .mp4 away
+	ids := m.allIDsLocked(func(it *Item) bool { return it.Status == StatusComplete && it.convertNote == "" })
 	m.mu.Unlock()
 	m.Remove(ids, false)
 }
@@ -935,6 +858,9 @@ func (m *Manager) FilePath(id int64) (string, error) {
 }
 
 func (m *Manager) cleanupRemovedLocked(it *Item) {
+	if it.M3U8Path != "" {
+		os.Remove(it.M3U8Path) // its playlist was only kept to download it
+	}
 	if !it.deleteFiles {
 		return
 	}
@@ -962,49 +888,33 @@ func (m *Manager) SaveM3U8(ids []int64) {
 	}
 }
 
+// saveM3U8 is Get playlist: it reads the row's page now for a fresh playlist,
+// even when the row has links. The saver writes it to the row's .m3u8.
 func (m *Manager) saveM3U8(it *Item) {
 	defer m.wg.Done()
 	ctx := m.rootCtx
-	m.mu.Lock()
-	res := it.res
-	m.mu.Unlock()
-	if m.stale(res) {
-		env := m.envFor(ctx, it, false)
-		if !m.acquireResolve(ctx) {
-			return
-		}
-		r, err := engine.Resolve(env, it.URL)
-		m.releaseResolve()
-		if err != nil {
-			if ctx.Err() == nil {
-				m.notify("error", fmt.Sprintf("Playlist for %s: %v", tools.ShortenString(it.URL, 60), err))
-			}
-			return
-		}
-		res = r
-		m.mu.Lock()
-		it.res = r
-		setServer(it, r.Server)
-		m.mu.Unlock()
-	}
-	m.mu.Lock()
-	dir := m.m3u8DirLocked(it)
-	m.mu.Unlock()
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		m.notify("error", fmt.Sprintf("Failed to write playlist data: %v", err))
+	env := m.envFor(ctx, it, false)
+	if !m.acquireResolve(ctx) {
 		return
 	}
-	name := res.Playlist.Filename + ".m3u8"
-	if err := os.WriteFile(filepath.Join(dir, name), res.Playlist.M3u8, 0666); err != nil {
-		m.notify("error", fmt.Sprintf("Failed to write playlist data: %v", err))
+	r, err := engine.Resolve(env, it.URL)
+	m.releaseResolve()
+	if err != nil {
+		if ctx.Err() == nil {
+			m.notify("error", fmt.Sprintf("Playlist for %s: %v", tools.ShortenString(it.URL, 60), err))
+		}
 		return
 	}
 	m.mu.Lock()
-	it.M3U8Saved = true
-	it.M3U8Path = filepath.Join(dir, name)
-	m.notifyLocked("info", "Saved playlist: "+name)
+	defer m.mu.Unlock()
+	if it.removed || it.Status == StatusComplete {
+		return
+	}
+	m.noteLengthLocked(it, r)
+	it.res = r
+	setServer(it, r.Server)
+	m.notifyLocked("info", "Got a fresh playlist: "+displayName(it))
 	m.changedLocked(true)
-	m.mu.Unlock()
 }
 
 // SetCategory moves rows to another category ("" = none). It is destructive:
@@ -1065,7 +975,7 @@ func (m *Manager) applyRecategoryLocked(it *Item, category string) {
 	it.Offset, it.FileSize, it.FullSize = 0, 0, 0
 	it.Percent = 0
 	it.FileBase, it.TempPath, it.DonePath = "", "", ""
-	it.M3U8Saved, it.M3U8Path = false, ""
+	it.M3U8Path = ""
 	it.Error = ""
 	it.Forced = false
 	it.Status = StatusQueued

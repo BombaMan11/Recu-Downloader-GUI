@@ -21,6 +21,8 @@
     <symbol id="i-bottom" viewBox="0 0 24 24"><path d="M5 20h14M12 4v11M7 10.5l5 5 5-5"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9.5 7V4h5v3M6 7l1 13h10l1-13M10 11v5M14 11v5"/></symbol>
     <symbol id="i-list" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v4h4M9 12h6M9 16h6"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24"><path d="M4 4h16v6H4zM4 14h16v6H4zM7.5 7h.01M7.5 17h.01"/></symbol>
+    <symbol id="i-expand" viewBox="0 0 24 24"><path d="m6 6 6 6 6-6M6 12l6 6 6-6"/></symbol>
     <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 6.5h6l2 2.5h10V19H3z"/></symbol>
     <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><circle cx="12" cy="12" r="7.6" stroke-dasharray="3.6 2.4"/></symbol>
     <symbol id="i-clip" viewBox="0 0 24 24"><path d="M9 4h6v3H9zM15 5.5h2.5V20h-11V5.5H9M9.5 11h5M9.5 14.5h5M9.5 17.5h3"/></symbol>
@@ -43,7 +45,7 @@
         <select class="sel" id="addCategory" aria-label="Category for the links in the box" title="Category for the links in the box"></select>
         <button class="btn primary" id="addBtn" type="button">Add to list</button>
       </div>
-      <button class="btn" id="scanBtn" type="button"><svg class="ic"><use href="#i-search"/></svg>Find links on a page…</button>
+      <input type="search" id="nameSearch" class="text search" placeholder="Search Names" aria-label="Search names" spellcheck="false" autocomplete="off">
     </div>
     <div class="topBtns">
       <button class="icon-btn" id="listenBtn" type="button" aria-pressed="false" title="Link listener is off" aria-label="Link listener"><svg class="ic"><use href="#i-clip"/></svg></button>
@@ -78,8 +80,10 @@
     <button class="tb only-icon" data-action="bottom" data-needs="sel" title="Move to bottom" aria-label="Move to bottom"><svg class="ic"><use href="#i-bottom"/></svg></button>
     <span class="sep"></span>
     <button class="tb" data-action="m3u8" data-needs="sel" title="Get playlist: save only the .m3u8 playlist of the selected rows"><svg class="ic"><use href="#i-list"/></svg>Playlist</button>
+    <button class="tb" id="expandGroups" hidden title="Show the parts of every group, or hide them all when every group is open"><svg class="ic"><use href="#i-expand"/></svg>Expand/Collapse</button>
     <button class="tb" data-action="remove" data-needs="sel" title="Remove the selected rows from the list (asks first)"><svg class="ic c-err"><use href="#i-trash"/></svg>Remove</button>
-    <button class="tb only-icon" data-action="clearcompleted" title="Clear finished: remove finished rows from the list (videos stay in the Done folder)" aria-label="Clear finished rows"><svg class="ic"><use href="#i-broom"/></svg></button>
+    <button class="tb only-icon" data-action="uniqueservers" title="Unique servers: every row on the same server as the row above it reads its page again (up to 10 times) for another server. Only runs when you press it." aria-label="Unique servers"><svg class="ic"><use href="#i-server"/></svg></button>
+    <button class="tb only-icon" data-action="clearcompleted" title="Clear finished: remove finished rows from the list (videos stay in the Done folder; rows still converting to MP4 stay until done)" aria-label="Clear finished rows"><svg class="ic"><use href="#i-broom"/></svg></button>
     <button class="tb only-icon" id="openDone" title="Open the Done folder" aria-label="Open the Done folder"><svg class="ic"><use href="#i-folder"/></svg></button>
     <span class="mode-label" style="margin-left:auto">Mode</span>
     <div class="seg" id="modeSeg" role="radiogroup" aria-label="Download mode">
@@ -104,6 +108,10 @@
     <div class="empty" id="empty">
       <strong>Nothing in the list yet</strong>
       <span>Paste links in the box above and press Add to list.</span>
+    </div>
+    <div class="empty" id="noMatch" hidden>
+      <strong>No names match</strong>
+      <span>Change or clear the search.</span>
     </div>
   </main>
 
@@ -137,7 +145,7 @@
         <div class="field">
           <label for="setCookie">Cookie</label>
           <textarea id="setCookie" rows="4" class="masked" autocomplete="off" spellcheck="false"></textarea>
-          <div class="row"><button class="btn" id="revealCookie" type="button">Show cookie</button> <button class="btn" id="silentCookie" type="button" hidden title="Empties the box and pastes whatever you last copied, without pausing the list">Silent Replace</button> <button class="btn" id="replaceCookie" type="button" title="Empties the box and pastes whatever you last copied">Replace cookie</button></div>
+          <div class="row"><button class="btn" id="revealCookie" type="button">Show cookie</button> <button class="btn" id="replaceCookie" type="button" title="Empties the box and pastes whatever you last copied">Replace cookie</button></div>
           <div class="help">Copy both values from your browser: open the site while signed in, press F12, choose Network, select a request to the site and look under Request headers. They are saved on this computer and kept after you close the program.</div>
         </div>
       </div>
@@ -194,6 +202,15 @@
       <div class="group">
         <h2>Table</h2>
         <div class="field">
+          <label id="statusOrderLabel">Status sort order</label>
+          <div class="sorder" id="statusOrder" role="list" aria-labelledby="statusOrderLabel"></div>
+          <div class="help">Sorting by the Status column puts the rows in this order, the left box first. Drag a box to move it, or select it and use the arrow keys.</div>
+        </div>
+        <div class="field">
+          <label class="check"><input type="checkbox" id="setGroupSplit"><span>Group Split Videos</span></label>
+          <div class="help">Shows the parts of a split video (name, name_01, name_02, ...) as one row. Press [+] next to the name to see the parts.</div>
+        </div>
+        <div class="field">
           <div class="row"><button class="btn" type="button" id="resetColumns">Reset column widths</button></div>
           <div class="help">Drag the border on the right of a column heading to resize it. The widths are remembered. This puts every column back to its default width.</div>
         </div>
@@ -237,46 +254,24 @@
           <input type="number" id="setRes" min="0" step="1" placeholder="e.g. 720">
           <div class="help">0 means the best quality available.</div>
         </div>
-        <label class="check"><input type="checkbox" id="setBottomFirst"><span>Add the bottom link first: when several links are added at once, the bottom link becomes the first row and the top link the last</span></label>
         <div class="field">
           <label class="check"><input type="checkbox" id="setFirstPieces"><span>Preload Files</span></label>
           <div class="help">When enabled, new URLs will have their first two frames downloaded to allocate their file in the Unfinished Folder</div>
         </div>
         <label class="check"><input type="checkbox" id="setAutoStart"><span>Start new rows as soon as they are added</span></label>
-        <label class="check"><input type="checkbox" id="setAutoResume"><span>Continue unfinished downloads when Recurbate starts</span></label>
       </div>
 
 
       <div class="group">
         <h2>Experimental</h2>
         <div class="field">
-          <label class="check"><input type="checkbox" id="setUniqueServer"><span>Unique Server Find</span></label>
-          <div class="help">When enabled, a URL that is about to start is not allowed to use the same server as the URL directly above it in the list.</div>
+          <label class="check"><input type="checkbox" id="setUniqueServers"><span>Unique Servers</span></label>
+          <div class="help">When a URL gets a new playlist (added, or started with Start, Start all or Force start) on the same server as the URL above it, it asks the site again, up to 10 times, before it starts. The server icon in the toolbar checks the whole list whether this is ticked or not.</div>
         </div>
         <div class="field">
-          <label for="setServerRetries">Retries</label>
-          <input type="number" id="setServerRetries" min="1" max="100" step="1">
-          <div class="help">How many times a URL asks for another server before it downloads on the server it has.</div>
-        </div>
-        <div class="field">
-          <label for="setServerWait">Time Between Retries (seconds)</label>
-          <input type="number" id="setServerWait" min="0.1" max="60" step="0.1">
-        </div>
-        <div class="field">
-          <label class="check"><input type="checkbox" id="setDeepSearch"><span>Deep Search</span></label>
-          <div class="help">When enabled, a URL also avoids the servers of the URLs further up the list, as many as set in Positions to check. If it cannot find one, it takes another server than the one directly above it, when the site offers one.</div>
-        </div>
-        <div class="field">
-          <label for="setDeepPositions">Positions to check</label>
-          <input type="number" id="setDeepPositions" min="2" max="20" step="1">
-          <div class="help">How many URLs above it are compared. For example, with 2, row 12 avoids the servers of rows 11 and 10.</div>
-        </div>
-        <div class="field">
-          <label class="check"><input type="checkbox" id="setLongLasting"><span>Long Lasting Site</span></label>
-          <div class="help">Reads the URLs at the start instead of reading the URLs when it's time to download</div>
-        </div>
-        <div class="field">
-          <label class="check"><input type="checkbox" id="setSkipRefused"><span>Skip Site Refused</span></label>
+          <label for="setUniqueWait">Time Between Tries (seconds)</label>
+          <input type="number" id="setUniqueWait" min="0.1" max="60" step="0.1">
+          <div class="help">How long Unique Servers waits before asking the site again (0.1 to 60). Asked again at once, the site tends to give the same server.</div>
         </div>
         <div class="field">
           <label for="setFFmpegDir">FFmpeg Location</label>
@@ -288,9 +283,6 @@
         </div>
         <div class="field">
           <label class="check"><input type="checkbox" id="setDeleteAfterConvert"><span>Delete After Conversion</span></label>
-        </div>
-        <div class="field">
-          <label class="check"><input type="checkbox" id="setSilentReplace"><span>Don't Pause on Cookie Change Option (Silent Replace)</span></label>
         </div>
       </div>
       </div>
@@ -325,20 +317,7 @@
     <label class="check" id="confirmCheckRow" hidden><input type="checkbox" id="confirmCheck"><span id="confirmCheckText"></span></label>
     <div class="dialog-actions">
       <button class="btn" value="cancel">Cancel</button>
-      <button class="btn danger" value="silent" id="confirmSilent" hidden>Silent Replace</button>
       <button class="btn danger" value="ok" id="confirmOk">Delete</button>
-    </div>
-  </form>
-</dialog>
-
-<dialog id="scanDlg">
-  <form method="dialog" id="scanForm">
-    <h2>Find links on a page</h2>
-    <p>Enter the address of a page that lists videos. The links found are put in the box at the top so you can check them before adding.</p>
-    <input type="url" id="scanUrl" placeholder="https://…" spellcheck="false" class="text">
-    <div class="dialog-actions">
-      <button class="btn" value="cancel" type="button" id="scanCancel">Cancel</button>
-      <button class="btn primary" id="scanGo" type="submit">Find links</button>
     </div>
   </form>
 </dialog>

@@ -53,6 +53,11 @@ func (m *Manager) convertLoop() {
 
 func (m *Manager) convert(it *Item) {
 	m.mu.Lock()
+	if it.removed && it.deleteFiles { // removed with its files: the video is gone
+		it.convertNote = ""
+		m.mu.Unlock()
+		return
+	}
 	src := it.DonePath
 	del := m.settings.DeleteAfterConvert
 	ffDir := m.settings.FFmpegDir
@@ -71,7 +76,10 @@ func (m *Manager) convert(it *Item) {
 		if m.rootCtx.Err() == nil {
 			m.notifyLocked("error", fmt.Sprintf("Could not convert %s to MP4: %v", displayName(it), err))
 		}
-	case it.removed || it.DonePath != src: // the row went away meanwhile
+	case it.removed && it.deleteFiles: // removed with its files while converting
+		os.Remove(dst)
+		os.Remove(src)
+	case !it.removed && it.DonePath != src: // the file went elsewhere meanwhile (new category)
 		os.Remove(dst)
 	default:
 		it.DonePath = dst
@@ -102,12 +110,8 @@ func convertToMP4(ctx context.Context, ffDir, src string) (string, error) {
 	probe, _ := runFFmpeg(ctx, ff, "-hide_banner", "-nostats", "-i", src, "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-f", "null", "-")
 	args := []string{"-loglevel", "error", "-hide_banner", "-y"}
 	if strings.Contains(probe, "timestamp discontinuity") {
-		aac := "aac"
-		if runtime.GOOS == "windows" {
-			aac = "aac_mf"
-		}
 		args = append(args, "-copyts", "-start_at_zero", "-i", src, "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "copy",
-			"-c:a", aac, "-aac_coder", "fast", "-b:a", "192k", "-af", "aresample=async=1000")
+			"-c:a", "aac", "-aac_coder", "fast", "-b:a", "192k", "-af", "aresample=async=1000") // not aac_mf: it takes only 44.1/48 kHz
 	} else {
 		args = append(args, "-i", src, "-c:v", "copy", "-c:a", "copy")
 	}

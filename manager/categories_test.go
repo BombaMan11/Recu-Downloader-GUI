@@ -100,15 +100,18 @@ func TestCategoryFoldersAndFallback(t *testing.T) {
 		t.Error("content differs")
 	}
 
-	// playlists go to the category's playlist folder, or the normal one
-	e.m.SaveM3U8([]int64{a, b})
-	e.waitFor("playlists saved", func() bool { return e.item(a).M3U8 && e.item(b).M3U8 })
-	if !pathExists(filepath.Join(away, "movies", "m3u8", e.site.Filename(2)+".m3u8")) {
-		t.Error("playlist not in the category folder")
+	// a row's playlist goes to its category's playlist folder, or the normal one,
+	// and goes away when the row finishes
+	if pathExists(filepath.Join(away, "movies", "m3u8", e.site.Filename(2)+".m3u8")) {
+		t.Error("a finished row kept its playlist")
 	}
-	if !pathExists(e.path("", e.site.Filename(4)+".m3u8")) {
-		t.Error("blank category playlist folder should use the normal one")
-	}
+	e.setSettings(func(s *Settings) { s.AutoStart = false })
+	e.addTo(movies, 8)
+	e.addTo(half, 10)
+	e.waitFor("playlists saved", func() bool {
+		return pathExists(filepath.Join(away, "movies", "m3u8", e.site.Filename(8)+".m3u8")) &&
+			pathExists(e.path("", e.site.Filename(10)+".m3u8"))
+	})
 }
 
 func mustRead(t *testing.T, p string) []byte {
@@ -132,11 +135,8 @@ func TestChangeCategoryOfFinishedRowDeletesAndRestarts(t *testing.T) {
 	A, B := catIDByName(t, e.m, "A"), catIDByName(t, e.m, "B")
 	id := e.addTo(A, 2)[0]
 	e.waitComplete(id)
-	e.m.SaveM3U8([]int64{id})
-	e.waitFor("playlist", func() bool { return e.item(id).M3U8 })
 	old := filepath.Join(away, "a", e.site.Filename(2)+".ts")
-	oldM3U8 := e.path("", e.site.Filename(2)+".m3u8")
-	if !pathExists(old) || !pathExists(oldM3U8) {
+	if !pathExists(old) {
 		t.Fatal("setup failed")
 	}
 
@@ -145,14 +145,14 @@ func TestChangeCategoryOfFinishedRowDeletesAndRestarts(t *testing.T) {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
 	e.waitComplete(id) // it restarted and finished again
-	if pathExists(old) || pathExists(oldM3U8) {
+	if pathExists(old) {
 		t.Fatal("old files were not deleted")
 	}
 	got := filepath.Join(away, "b", e.site.Filename(2)+".ts")
 	if !bytes.Equal(mustRead(t, got), e.site.Expected(2, "720p", 0, 20)) {
 		t.Fatal("restarted file is wrong")
 	}
-	if it := e.item(id); it.CategoryName != "B" || it.M3U8 {
+	if it := e.item(id); it.CategoryName != "B" {
 		t.Fatalf("%+v", it)
 	}
 	// same category again: nothing happens
@@ -240,6 +240,7 @@ func TestCategorySurvivesRestart(t *testing.T) {
 		}
 	}
 	e.m = m2
+	e.m.Start([]int64{id}) // unfinished rows open paused
 	e.waitComplete(id)
 	if !pathExists(filepath.Join(away, "a-done", e.site.Filename(2)+".ts")) {
 		t.Fatal("resumed download did not finish in the category folder")

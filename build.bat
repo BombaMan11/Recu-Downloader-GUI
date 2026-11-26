@@ -1,6 +1,6 @@
 @echo off
-rem Builds Recu.exe in this folder. Change v3.2.X to your version number first.
-go build -trimpath -ldflags="-H=windowsgui -s -w -X main.tag=v3.2.6" -buildvcs=false -o Recu.exe
+rem Builds Recu.exe in this folder. Change v1.0.09 to your version number first.
+go build -trimpath -ldflags="-H=windowsgui -s -w -X main.tag=v1.0.09" -buildvcs=false -o Recu.exe
 if errorlevel 1 (
   echo.
   echo Build failed. Read the message above.

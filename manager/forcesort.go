@@ -32,6 +32,10 @@ func (m *Manager) sortQueueLocked() {
 			return na
 		}
 		c := compareNames(displayName(rows[a]), displayName(rows[b]))
+		if c == 0 { // parts of one video: by their start (and end) time, in both directions
+			sa, sb := rows[a].Section, rows[b].Section
+			return sa[0] < sb[0] || sa[0] == sb[0] && sa[1] < sb[1]
+		}
 		if dir == "za" {
 			return c > 0
 		}

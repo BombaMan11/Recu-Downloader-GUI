@@ -4,7 +4,6 @@ package manager
 
 import (
 	"context"
-	"time"
 
 	"Recurbate/engine"
 )
@@ -35,7 +34,6 @@ const (
 	StatusDownloading Status = "downloading" // writing segments
 	StatusComplete    Status = "complete"
 	StatusError       Status = "error"
-	StatusSkipped     Status = "skipped" // the site refused it and Skip Site Refused is on; Start tries again
 )
 
 // Item is one row of the table. All fields are guarded by Manager.mu.
@@ -53,10 +51,9 @@ type Item struct {
 	FileBase   string
 	Server     string
 	Percent    float32
-	FullSize   int64 // estimated size of the finished file (exact once complete)
-	Forced     bool  // force-started: ignores the mode's limits
-	M3U8Saved  bool
-	M3U8Path   string // the playlist saved for this row
+	FullSize   int64  // estimated size of the finished file (exact once complete)
+	Forced     bool   // force-started: ignores the mode's limits
+	M3U8Path   string // the row's playlist (.m3u8), kept until it finishes
 	DonePath   string
 	TempPath   string // the unfinished .ts file, wherever it was started
 	Category   string // category id, "" = none
@@ -66,10 +63,9 @@ type Item struct {
 	res          *engine.Resolved
 	busy         bool // a goroutine is working on this item (it may still be winding down)
 	preResolving bool
-	lookingUp    bool      // its length is being looked up
-	lenTried     bool      // the video length was already looked up since the program started
-	preWait      time.Time // the site refused the server check: do not ask again before this
-	preBlocks    int       // how many times in a row
+	lookingUp    bool // its length is being looked up
+	lenTried     bool // the video length was already looked up since the program started
+	readFailed   bool // reading its page ahead failed: not read again until it is started
 	cancel       context.CancelFunc
 	removed      bool
 	deleteFiles  bool
@@ -79,9 +75,8 @@ type Item struct {
 	convertNote  string // "Waiting to convert to MP4" / "Converting to MP4" on a finished row
 	note         string
 	priming      bool    // running to download its first pieces only
-	fresh        bool    // its server was learned in this session (not just remembered from an earlier one)
-	settled      bool    // this run is past the Unique Server Find check
 	primeWant    bool    // after the first pieces: queue it (it was asked to start) instead of pausing
+	held         bool    // added or started: waits for its new playlist and server check (readUnique) before it starts
 	recat        *string // category to move to once the running work has stopped
 }
 

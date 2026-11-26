@@ -96,3 +96,20 @@ func TestForceNameSortIsKept(t *testing.T) {
 		t.Errorf("an unknown value was kept: %q", got)
 	}
 }
+
+// Parts of one video (the same name, different start and end times) stay in
+// the order of their start times, whichever order they are in before the sort,
+// and in both directions.
+func TestForceNameSortKeepsPartsInTimeOrder(t *testing.T) {
+	part := func(id int64, start, end float32) *Item {
+		return &Item{ID: id, Status: StatusQueued, FileBase: "user5_x", Section: [2]float32{start, end}}
+	}
+	for _, dir := range []string{"az", "za"} {
+		m := &Manager{settings: Settings{ForceNameSort: dir}}
+		m.items = []*Item{part(3, 60, 100), part(1, 0, 30), part(2, 30, 60)}
+		m.sortQueueLocked()
+		if a, b, c := m.items[0].ID, m.items[1].ID, m.items[2].ID; a != 1 || b != 2 || c != 3 {
+			t.Errorf("%s: order %d %d %d, want 1 2 3", dir, a, b, c)
+		}
+	}
+}

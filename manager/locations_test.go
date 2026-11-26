@@ -191,14 +191,12 @@ func TestDownloadsGoToCustomFolders(t *testing.T) {
 	}
 }
 
-func dirNotEmpty(p string) bool { f, _ := os.ReadDir(p); return len(f) > 0 }
-
 func TestLogMoves(t *testing.T) {
 	base := t.TempDir()
 	if err := applog.Open(base); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { applog.Move(t.TempDir()) })
+	t.Cleanup(applog.Close) // before the temp folders go: Windows can not delete an open file
 	os.WriteFile(filepath.Join(base, applog.FileName), []byte("old line\n"), 0600)
 	dst := filepath.Join(t.TempDir(), "logs")
 	if err := applog.Move(dst); err != nil {
